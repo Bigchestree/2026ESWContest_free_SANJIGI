@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <RadioLib.h>
-#include <TFT_eSPI.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -14,7 +13,6 @@
 #define LORA_DIO1  D4
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
-TFT_eSPI tft = TFT_eSPI();
 
 // ==========================================
 // 1. 하드코딩된 앵커 상대 좌표 (Master = Anchor 1 = 원점 0,0,0)
@@ -42,13 +40,13 @@ struct RssiBuffer {
         int temp[5];
         for (int i = 0; i < 5; i++) temp[i] = buf[i];
         std::sort(temp, temp + 5);
-        return temp[2]; // 중앙값 (3번째)
+        return temp[2];
     }
 };
 
 RssiBuffer bufA, bufB, bufC;
 int medianRssiA = -999, medianRssiB = -999, medianRssiC = -999;
-float latestTargetAlt = 0.0; // 수신된 조난자 BME280 고도
+float latestTargetAlt = 0.0;
 
 volatile bool triggerSnapshot = false;
 
@@ -67,18 +65,16 @@ class TriggerCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-// Path Loss Model (RSSI -> 3D 전체 거리 변환)
 float rssiToDistance3D(int rssi) {
-    int A = -40;    // 1m 거리 기준 RSSI (실측 데이터 반영)
+    int A = -40;    // 1m 거리 기준 RSSI
     float n = 2.8;  // 경로 손실 지수
     return pow(10.0, (float)(A - rssi) / (10.0 * n));
 }
 
 // ==========================================
-// 4. 백그라운드 데이터 수신 및 오버라이트
+// 4. 백그라운드 데이터 수신 및 파싱
 // ==========================================
 void parseIncomingPacket(String msg, int directRssi) {
-    // 1) Target 직접 수신
     if (msg.startsWith("TARGET:PING")) {
         bufA.add(directRssi);
         if (bufA.count == 5) medianRssiA = bufA.getMedian();
@@ -87,47 +83,53 @@ void parseIncomingPacket(String msg, int directRssi) {
         if (altIdx != -1) {
             latestTargetAlt = msg.substring(altIdx + 4).toFloat();
         }
+        Serial.printf("[RX] Target Direct PING | RSSI: %d dBm | Alt: %.1f m\n", directRssi, latestTargetAlt);
     }
-    // 2) Anchor 2 중계 수신
     else if (msg.startsWith("ANCHOR2:")) {
         int rssiIdx = msg.indexOf("RSSI:");
-        int altIdx = msg.indexOf(",ALT:");
         if (rssiIdx != -1) {
-            int rssiVal = msg.substring(rssiIdx + 5, altIdx).toInt();
-            bufB.add(rssiVal);
+            int altIdx = msg.indexOf(",ALT:", rssiIdx);
+            String rssiStr = (altIdx != -1) ? msg.substring(rssiIdx + 5, altIdx) : msg.substring(rssiIdx + 5);
+            int val = rssiStr.toInt();
+            bufB.add(val);
             if (bufB.count == 5) medianRssiB = bufB.getMedian();
+            Serial.printf("[RX] Anchor 2 Relay | RSSI: %d dBm\n", val);
         }
     }
-    // 3) Anchor 3 중계 수신
     else if (msg.startsWith("ANCHOR3:")) {
         int rssiIdx = msg.indexOf("RSSI:");
-        int altIdx = msg.indexOf(",ALT:");
         if (rssiIdx != -1) {
-            int rssiVal = msg.substring(rssiIdx + 5, altIdx).toInt();
-            bufC.add(rssiVal);
+            int altIdx = msg.indexOf(",ALT:", rssiIdx);
+            String rssiStr = (altIdx != -1) ? msg.substring(rssiIdx + 5, altIdx) : msg.substring(rssiIdx + 5);
+            int val = rssiStr.toInt();
+            bufC.add(val);
             if (bufC.count == 5) medianRssiC = bufC.getMedian();
+            Serial.printf("[RX] Anchor 3 Relay | RSSI: %d dBm\n", val);
         }
     }
 }
 
 // ==========================================
-// 5. Z축(BME280 고도) 보정 2D 삼각측량 1회 연산
+// 5. Z축 보정 2D 삼각측량 연산 & 시리얼 출력
 // ==========================================
 void runTrilaterationSnapshot() {
+    Serial.println("\n==================================================");
+    Serial.println("         [ RESCUE TARGET POSITION REPORT ]        ");
+    Serial.println("==================================================");
+
     if (medianRssiA == -999 || medianRssiB == -999 || medianRssiC == -999) {
-        tft.fillScreen(TFT_BLACK);
-        tft.drawString("Collecting 5 Samples...", 10, 10);
+        Serial.println(" [!] WARNING: Collecting samples... (Need 5 samples/node)");
+        Serial.printf("     Current Samples -> A: %d/5, B: %d/5, C: %d/5\n", bufA.count, bufB.count, bufC.count);
+        Serial.println("==================================================\n");
         return;
     }
 
     int rA = medianRssiA, rB = medianRssiB, rC = medianRssiC;
 
-    // 1) 3D 직거리 계산
     float d1_3d = rssiToDistance3D(rA);
     float d2_3d = rssiToDistance3D(rB);
     float d3_3d = rssiToDistance3D(rC);
 
-    // 2) Z축 고도차(Delta Z) 피타고라스 정리 보정 -> 2D 평면 거리 변환
     float dzA = fabs(latestTargetAlt - AZ);
     float dzB = fabs(latestTargetAlt - BZ);
     float dzC = fabs(latestTargetAlt - CZ);
@@ -136,7 +138,6 @@ void runTrilaterationSnapshot() {
     float d2 = (d2_3d > dzB) ? sqrt(d2_3d * d2_3d - dzB * dzB) : 0.1;
     float d3 = (d3_3d > dzC) ? sqrt(d3_3d * d3_3d - dzC * dzC) : 0.1;
 
-    // 3) 보정된 평면 거리로 2D 삼변측량 계산
     float A = 2 * BX;
     float B = 2 * BY;
     float C = d1*d1 - d2*d2 + BX*BX + BY*BY;
@@ -144,60 +145,78 @@ void runTrilaterationSnapshot() {
     float E = 2 * CY;
     float F = d1*d1 - d3*d3 + CX*CX + CY*CY;
 
-    float targetX = (C * E - F * B) / (A * E - D * B);
-    float targetY = (A * F - C * D) / (A * E - D * B);
+    float denom = (A * E - D * B);
+    if (fabs(denom) < 0.001) {
+        Serial.println(" [!] ERROR: Mathematical Singularity (Division by zero)");
+        return;
+    }
 
-    // 4) LCD 렌더링
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.drawString("[ RESCUE TARGET MAP ]", 10, 10);
-    tft.printf("\nPos (Master=0,0):\nX: %.1f m, Y: %.1f m\nZ (Alt): %.1f m\n", targetX, targetY, latestTargetAlt);
-    tft.printf("\nMed RSSI:\n[%d] [%d] [%d]\n", rA, rB, rC);
+    float targetX = (C * E - F * B) / denom;
+    float targetY = (A * F - C * D) / denom;
 
-    // 맵 시각화
-    int screenX = map(targetX, -20, 100, 20, 220);
-    int screenY = map(targetY, -20, 100, 220, 40);
-    tft.fillCircle(screenX, screenY, 6, TFT_RED);
-    tft.drawCircle(screenX, screenY, 12, TFT_YELLOW);
+    Serial.printf(" [ Median RSSI ]  A(Master): %d | B: %d | C: %d (dBm)\n", rA, rB, rC);
+    Serial.printf(" [ 2D Distance ]  d1: %.2fm | d2: %.2fm | d3: %.2fm\n", d1, d2, d3);
+    Serial.println(" --------------------------------------------------");
+    Serial.printf(" [ TARGET POS  ]  X = %.2f m\n", targetX);
+    Serial.printf("                  Y = %.2f m\n", targetY);
+    Serial.printf("                  Z = %.2f m (Altitude)\n", latestTargetAlt);
+    Serial.println(" --------------------------------------------------");
+    
+    Serial.printf("DATA,%.2f,%.2f,%.2f,%d,%d,%d\n", targetX, targetY, latestTargetAlt, rA, rB, rC);
+    Serial.println("==================================================\n");
 }
 
 // ==========================================
-// 6. Setup & Main Loop
+// 6. Setup & Main Loop (부팅 안정화 조치 적용)
 // ==========================================
 void setup() {
     Serial.begin(115200);
+    
+    // USB CDC 연결 및 전원 안정을 위한 2초 대기
+    delay(2000); 
 
-    tft.init();
-    tft.fillScreen(TFT_BLACK);
-    tft.drawString("Init Master Node...", 10, 10);
+    Serial.println("\n-------------------------------------------");
+    Serial.println(" Initializing Master Rescue System...");
+    Serial.println("-------------------------------------------");
 
-    // SX1262 초기화
-    radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
+    // 1. LoRa 무선 모듈 초기화
+    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.println(" [+] LoRa Radio Init Success!");
+        radio.startReceive();
+    } else {
+        Serial.printf(" [-] LoRa Radio Init Failed, code: %d\n", state);
+    }
 
-    // BLE 서비스 초기화
+    // 2. BLE 초기화 (경량화 설정으로 메모리 crash 방지)
     BLEDevice::init("Master_Rescue_Node");
     BLEServer *pServer = BLEDevice::createServer();
     BLEService *pService = pServer->createService(SERVICE_UUID);
     BLECharacteristic *pChar = pService->createCharacteristic(
-                                  CHARACTERISTIC_UUID,
-                                  BLECharacteristic::PROPERTY_WRITE
+                                    CHARACTERISTIC_UUID,
+                                    BLECharacteristic::PROPERTY_WRITE
                                );
     pChar->setCallbacks(new TriggerCallbacks());
     pService->start();
     
     BLEAdvertising *pAdv = BLEDevice::getAdvertising();
     pAdv->addServiceUUID(SERVICE_UUID);
-    pAdv->start();
+    pAdv->setMinPreferred(0x06);  // 전력 소모 및 간섭 감소 옵션
+    pAdv->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+
+    Serial.println(" [+] BLE Trigger Service Ready!");
+    Serial.println(" System Ready. Waiting for LoRa packets / BLE commands...\n");
 }
 
 void loop() {
-    // 1) 패킷 백그라운드 수신
+    // 1) 비동기 백그라운드 패킷 수신
     String strData;
-    int state = radio.receive(strData);
+    int state = radio.readData(strData);
     if (state == RADIOLIB_ERR_NONE) {
         int directRssi = radio.getRSSI();
         parseIncomingPacket(strData, directRssi);
+        radio.startReceive(); // 다음 패킷 수신 대기
     }
 
     // 2) BLE [위치 측정] 명령 수신 시 연산 실행
