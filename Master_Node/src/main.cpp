@@ -14,7 +14,7 @@
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 
-// 앵커 좌표
+// 앵커 좌표 설정
 const float AX = 0.0,   AY = 0.0,   AZ = 0.0;
 const float BX = 80.0,  BY = 0.0,   BZ = 0.0;
 const float CX = 40.0,  CY = 69.3,  CZ = 0.0;
@@ -23,7 +23,7 @@ struct RssiBuffer {
     int buf[5];
     int head = 0;
     int count = 0;
-    unsigned long lastRxTime = 0; // 수신 상태 확인용 타임스탬프
+    unsigned long lastRxTime = 0;
 
     void add(int rssi) {
         buf[head] = rssi;
@@ -41,8 +41,7 @@ struct RssiBuffer {
     }
 
     bool isAlive() {
-        // 최근 6초 이내에 패킷을 받은 적이 있는지 확인
-        return (millis() - lastRxTime < 6000) && (count > 0);
+        return (millis() - lastRxTime < 5000) && (count > 0);
     }
 };
 
@@ -52,10 +51,9 @@ float latestTargetAlt = 0.0;
 
 volatile bool triggerSnapshot = false;
 
-// BLE UUID
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHAR_CMD_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8" // 노트북 -> 마스터 (명령 쓰기)
-#define CHAR_DATA_UUID      "a3c17822-1d5b-4176-a447-0624916a0487" // 마스터 -> 노트북 (데이터 전송)
+#define CHAR_CMD_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CHAR_DATA_UUID      "a3c17822-1d5b-4176-a447-0624916a0487"
 
 BLECharacteristic *pDataChar = NULL;
 bool deviceConnected = false;
@@ -64,7 +62,7 @@ class ServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) { deviceConnected = true; }
     void onDisconnect(BLEServer* pServer) { 
         deviceConnected = false; 
-        BLEDevice::startAdvertising(); // 재연결 대기
+        BLEDevice::startAdvertising(); 
     }
 };
 
@@ -83,7 +81,6 @@ float rssiToDistance3D(int rssi) {
     return pow(10.0, (float)(A - rssi) / (10.0 * n));
 }
 
-// 노트북으로 BLE 무선 데이터 전송 (Notify)
 void sendBleNotify(String msg) {
     if (deviceConnected && pDataChar != NULL) {
         pDataChar->setValue(msg.c_str());
@@ -91,13 +88,21 @@ void sendBleNotify(String msg) {
     }
 }
 
+// ==========================================
+// 조난자 패킷 포맷(TARGET:PING,ALT:xxx) 맞춤 파싱
+// ==========================================
 void parseIncomingPacket(String msg, int directRssi) {
+    // 1) 조난자 직접 수신 패킷
     if (msg.startsWith("TARGET:PING")) {
         bufA.add(directRssi);
         if (bufA.count == 5) medianRssiA = bufA.getMedian();
+
         int altIdx = msg.indexOf("ALT:");
-        if (altIdx != -1) latestTargetAlt = msg.substring(altIdx + 4).toFloat();
+        if (altIdx != -1) {
+            latestTargetAlt = msg.substring(altIdx + 4).toFloat();
+        }
     }
+    // 2) 앵커 2 중계 패킷
     else if (msg.startsWith("ANCHOR2:")) {
         int rssiIdx = msg.indexOf("RSSI:");
         if (rssiIdx != -1) {
@@ -107,6 +112,7 @@ void parseIncomingPacket(String msg, int directRssi) {
             if (bufB.count == 5) medianRssiB = bufB.getMedian();
         }
     }
+    // 3) 앵커 3 중계 패킷
     else if (msg.startsWith("ANCHOR3:")) {
         int rssiIdx = msg.indexOf("RSSI:");
         if (rssiIdx != -1) {
@@ -152,17 +158,14 @@ void runTrilaterationSnapshot() {
     float targetX = (C * E - F * B) / denom;
     float targetY = (A * F - C * D) / denom;
 
-    // 노트북으로 연산 데이터 무선 보냄 (RES:X,Y,Z,d1,d2,d3)
     String resMsg = "RES:" + String(targetX, 2) + "," + String(targetY, 2) + "," + String(latestTargetAlt, 1) + "," + String(d1, 1) + "," + String(d2, 1) + "," + String(d3, 1);
     sendBleNotify(resMsg);
 }
 
-// 1초마다 주기적으로 각 노드의 연결/수신 생존 상태를 노트북으로 보냄
 unsigned long lastStatusTime = 0;
 void checkAndSendNodeStatus() {
     if (millis() - lastStatusTime > 1000) {
         lastStatusTime = millis();
-        // STATUS:조난자상태,앵커2상태,앵커3상태,RSSI_A,RSSI_B,RSSI_C
         String statMsg = "STAT:" + String(bufA.isAlive()?1:0) + "," + String(bufB.isAlive()?1:0) + "," + String(bufC.isAlive()?1:0) + "," + String(medianRssiA) + "," + String(medianRssiB) + "," + String(medianRssiC);
         sendBleNotify(statMsg);
     }
@@ -181,14 +184,12 @@ void setup() {
 
     BLEService *pService = pServer->createService(SERVICE_UUID);
 
-    // 명령 수신용 (노트북 -> 마스터)
     BLECharacteristic *pCmdChar = pService->createCharacteristic(
                                     CHAR_CMD_UUID,
                                     BLECharacteristic::PROPERTY_WRITE
                                  );
     pCmdChar->setCallbacks(new CommandCallbacks());
 
-    // 데이터 송신용 (마스터 -> 노트북)
     pDataChar = pService->createCharacteristic(
                     CHAR_DATA_UUID,
                     BLECharacteristic::PROPERTY_READ |
@@ -211,10 +212,8 @@ void loop() {
         radio.startReceive();
     }
 
-    // 노드별 수신 생존 상태 주기적 알림
     checkAndSendNodeStatus();
 
-    // 측정 시작 명령 수신 시 삼각측량 실행
     if (triggerSnapshot) {
         triggerSnapshot = false;
         runTrilaterationSnapshot();
