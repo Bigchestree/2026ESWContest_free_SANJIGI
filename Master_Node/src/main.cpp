@@ -3,10 +3,10 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <BLE2902.h>
 #include <algorithm>
 #include <math.h>
 
-// Wio-SX1262 핀 매핑
 #define LORA_NSS   D1
 #define LORA_BUSY  D2
 #define LORA_NRST  D3
@@ -14,25 +14,22 @@
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 
-// ==========================================
-// 1. 하드코딩된 앵커 상대 좌표 (Master = Anchor 1 = 원점 0,0,0)
-// ==========================================
-const float AX = 0.0,   AY = 0.0,   AZ = 0.0;     // Anchor 1 (Master)
-const float BX = 80.0,  BY = 0.0,   BZ = 0.0;     // Anchor 2
-const float CX = 40.0,  CY = 69.3,  CZ = 0.0;     // Anchor 3
+// 앵커 좌표
+const float AX = 0.0,   AY = 0.0,   AZ = 0.0;
+const float BX = 80.0,  BY = 0.0,   BZ = 0.0;
+const float CX = 40.0,  CY = 69.3,  CZ = 0.0;
 
-// ==========================================
-// 2. RSSI 버퍼 및 중앙값(Median) 구조체
-// ==========================================
 struct RssiBuffer {
     int buf[5];
     int head = 0;
     int count = 0;
+    unsigned long lastRxTime = 0; // 수신 상태 확인용 타임스탬프
 
     void add(int rssi) {
         buf[head] = rssi;
         head = (head + 1) % 5;
         if (count < 5) count++;
+        lastRxTime = millis();
     }
 
     int getMedian() {
@@ -42,6 +39,11 @@ struct RssiBuffer {
         std::sort(temp, temp + 5);
         return temp[2];
     }
+
+    bool isAlive() {
+        // 최근 6초 이내에 패킷을 받은 적이 있는지 확인
+        return (millis() - lastRxTime < 6000) && (count > 0);
+    }
 };
 
 RssiBuffer bufA, bufB, bufC;
@@ -50,13 +52,23 @@ float latestTargetAlt = 0.0;
 
 volatile bool triggerSnapshot = false;
 
-// ==========================================
-// 3. BLE 서비스 및 콜백
-// ==========================================
+// BLE UUID
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CHAR_CMD_UUID       "beb5483e-36e1-4688-b7f5-ea07361b26a8" // 노트북 -> 마스터 (명령 쓰기)
+#define CHAR_DATA_UUID      "a3c17822-1d5b-4176-a447-0624916a0487" // 마스터 -> 노트북 (데이터 전송)
 
-class TriggerCallbacks: public BLECharacteristicCallbacks {
+BLECharacteristic *pDataChar = NULL;
+bool deviceConnected = false;
+
+class ServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) { deviceConnected = true; }
+    void onDisconnect(BLEServer* pServer) { 
+        deviceConnected = false; 
+        BLEDevice::startAdvertising(); // 재연결 대기
+    }
+};
+
+class CommandCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pChar) {
         String rxVal = pChar->getValue().c_str();
         if (rxVal == "MEASURE" || rxVal == "1") {
@@ -66,34 +78,33 @@ class TriggerCallbacks: public BLECharacteristicCallbacks {
 };
 
 float rssiToDistance3D(int rssi) {
-    int A = -40;    // 1m 거리 기준 RSSI
-    float n = 2.8;  // 경로 손실 지수
+    int A = -40;
+    float n = 2.8;
     return pow(10.0, (float)(A - rssi) / (10.0 * n));
 }
 
-// ==========================================
-// 4. 백그라운드 데이터 수신 및 파싱
-// ==========================================
+// 노트북으로 BLE 무선 데이터 전송 (Notify)
+void sendBleNotify(String msg) {
+    if (deviceConnected && pDataChar != NULL) {
+        pDataChar->setValue(msg.c_str());
+        pDataChar->notify();
+    }
+}
+
 void parseIncomingPacket(String msg, int directRssi) {
     if (msg.startsWith("TARGET:PING")) {
         bufA.add(directRssi);
         if (bufA.count == 5) medianRssiA = bufA.getMedian();
-
         int altIdx = msg.indexOf("ALT:");
-        if (altIdx != -1) {
-            latestTargetAlt = msg.substring(altIdx + 4).toFloat();
-        }
-        Serial.printf("[RX] Target Direct PING | RSSI: %d dBm | Alt: %.1f m\n", directRssi, latestTargetAlt);
+        if (altIdx != -1) latestTargetAlt = msg.substring(altIdx + 4).toFloat();
     }
     else if (msg.startsWith("ANCHOR2:")) {
         int rssiIdx = msg.indexOf("RSSI:");
         if (rssiIdx != -1) {
             int altIdx = msg.indexOf(",ALT:", rssiIdx);
             String rssiStr = (altIdx != -1) ? msg.substring(rssiIdx + 5, altIdx) : msg.substring(rssiIdx + 5);
-            int val = rssiStr.toInt();
-            bufB.add(val);
+            bufB.add(rssiStr.toInt());
             if (bufB.count == 5) medianRssiB = bufB.getMedian();
-            Serial.printf("[RX] Anchor 2 Relay | RSSI: %d dBm\n", val);
         }
     }
     else if (msg.startsWith("ANCHOR3:")) {
@@ -101,34 +112,21 @@ void parseIncomingPacket(String msg, int directRssi) {
         if (rssiIdx != -1) {
             int altIdx = msg.indexOf(",ALT:", rssiIdx);
             String rssiStr = (altIdx != -1) ? msg.substring(rssiIdx + 5, altIdx) : msg.substring(rssiIdx + 5);
-            int val = rssiStr.toInt();
-            bufC.add(val);
+            bufC.add(rssiStr.toInt());
             if (bufC.count == 5) medianRssiC = bufC.getMedian();
-            Serial.printf("[RX] Anchor 3 Relay | RSSI: %d dBm\n", val);
         }
     }
 }
 
-// ==========================================
-// 5. Z축 보정 2D 삼각측량 연산 & 시리얼 출력
-// ==========================================
 void runTrilaterationSnapshot() {
-    Serial.println("\n==================================================");
-    Serial.println("         [ RESCUE TARGET POSITION REPORT ]        ");
-    Serial.println("==================================================");
-
     if (medianRssiA == -999 || medianRssiB == -999 || medianRssiC == -999) {
-        Serial.println(" [!] WARNING: Collecting samples... (Need 5 samples/node)");
-        Serial.printf("     Current Samples -> A: %d/5, B: %d/5, C: %d/5\n", bufA.count, bufB.count, bufC.count);
-        Serial.println("==================================================\n");
+        sendBleNotify("ERR:샘플수집중 (A:" + String(bufA.count) + "/5, B:" + String(bufB.count) + "/5, C:" + String(bufC.count) + "/5)");
         return;
     }
 
-    int rA = medianRssiA, rB = medianRssiB, rC = medianRssiC;
-
-    float d1_3d = rssiToDistance3D(rA);
-    float d2_3d = rssiToDistance3D(rB);
-    float d3_3d = rssiToDistance3D(rC);
+    float d1_3d = rssiToDistance3D(medianRssiA);
+    float d2_3d = rssiToDistance3D(medianRssiB);
+    float d3_3d = rssiToDistance3D(medianRssiC);
 
     float dzA = fabs(latestTargetAlt - AZ);
     float dzB = fabs(latestTargetAlt - BZ);
@@ -147,79 +145,76 @@ void runTrilaterationSnapshot() {
 
     float denom = (A * E - D * B);
     if (fabs(denom) < 0.001) {
-        Serial.println(" [!] ERROR: Mathematical Singularity (Division by zero)");
+        sendBleNotify("ERR:연산오류(Singularity)");
         return;
     }
 
     float targetX = (C * E - F * B) / denom;
     float targetY = (A * F - C * D) / denom;
 
-    Serial.printf(" [ Median RSSI ]  A(Master): %d | B: %d | C: %d (dBm)\n", rA, rB, rC);
-    Serial.printf(" [ 2D Distance ]  d1: %.2fm | d2: %.2fm | d3: %.2fm\n", d1, d2, d3);
-    Serial.println(" --------------------------------------------------");
-    Serial.printf(" [ TARGET POS  ]  X = %.2f m\n", targetX);
-    Serial.printf("                  Y = %.2f m\n", targetY);
-    Serial.printf("                  Z = %.2f m (Altitude)\n", latestTargetAlt);
-    Serial.println(" --------------------------------------------------");
-    
-    Serial.printf("DATA,%.2f,%.2f,%.2f,%d,%d,%d\n", targetX, targetY, latestTargetAlt, rA, rB, rC);
-    Serial.println("==================================================\n");
+    // 노트북으로 연산 데이터 무선 보냄 (RES:X,Y,Z,d1,d2,d3)
+    String resMsg = "RES:" + String(targetX, 2) + "," + String(targetY, 2) + "," + String(latestTargetAlt, 1) + "," + String(d1, 1) + "," + String(d2, 1) + "," + String(d3, 1);
+    sendBleNotify(resMsg);
 }
 
-// ==========================================
-// 6. Setup & Main Loop (부팅 안정화 조치 적용)
-// ==========================================
+// 1초마다 주기적으로 각 노드의 연결/수신 생존 상태를 노트북으로 보냄
+unsigned long lastStatusTime = 0;
+void checkAndSendNodeStatus() {
+    if (millis() - lastStatusTime > 1000) {
+        lastStatusTime = millis();
+        // STATUS:조난자상태,앵커2상태,앵커3상태,RSSI_A,RSSI_B,RSSI_C
+        String statMsg = "STAT:" + String(bufA.isAlive()?1:0) + "," + String(bufB.isAlive()?1:0) + "," + String(bufC.isAlive()?1:0) + "," + String(medianRssiA) + "," + String(medianRssiB) + "," + String(medianRssiC);
+        sendBleNotify(statMsg);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
-    
-    // USB CDC 연결 및 전원 안정을 위한 2초 대기
-    delay(2000); 
+    delay(1000);
 
-    Serial.println("\n-------------------------------------------");
-    Serial.println(" Initializing Master Rescue System...");
-    Serial.println("-------------------------------------------");
+    radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
+    radio.startReceive();
 
-    // 1. LoRa 무선 모듈 초기화
-    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.println(" [+] LoRa Radio Init Success!");
-        radio.startReceive();
-    } else {
-        Serial.printf(" [-] LoRa Radio Init Failed, code: %d\n", state);
-    }
-
-    // 2. BLE 초기화 (경량화 설정으로 메모리 crash 방지)
     BLEDevice::init("Master_Rescue_Node");
     BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new ServerCallbacks());
+
     BLEService *pService = pServer->createService(SERVICE_UUID);
-    BLECharacteristic *pChar = pService->createCharacteristic(
-                                    CHARACTERISTIC_UUID,
+
+    // 명령 수신용 (노트북 -> 마스터)
+    BLECharacteristic *pCmdChar = pService->createCharacteristic(
+                                    CHAR_CMD_UUID,
                                     BLECharacteristic::PROPERTY_WRITE
-                               );
-    pChar->setCallbacks(new TriggerCallbacks());
+                                 );
+    pCmdChar->setCallbacks(new CommandCallbacks());
+
+    // 데이터 송신용 (마스터 -> 노트북)
+    pDataChar = pService->createCharacteristic(
+                    CHAR_DATA_UUID,
+                    BLECharacteristic::PROPERTY_READ |
+                    BLECharacteristic::PROPERTY_NOTIFY
+                );
+    pDataChar->addDescriptor(new BLE2902());
+
     pService->start();
     
     BLEAdvertising *pAdv = BLEDevice::getAdvertising();
     pAdv->addServiceUUID(SERVICE_UUID);
-    pAdv->setMinPreferred(0x06);  // 전력 소모 및 간섭 감소 옵션
-    pAdv->setMinPreferred(0x12);
-    BLEDevice::startAdvertising();
-
-    Serial.println(" [+] BLE Trigger Service Ready!");
-    Serial.println(" System Ready. Waiting for LoRa packets / BLE commands...\n");
+    pAdv->start();
 }
 
 void loop() {
-    // 1) 비동기 백그라운드 패킷 수신
     String strData;
     int state = radio.readData(strData);
     if (state == RADIOLIB_ERR_NONE) {
-        int directRssi = radio.getRSSI();
-        parseIncomingPacket(strData, directRssi);
-        radio.startReceive(); // 다음 패킷 수신 대기
+        parseIncomingPacket(strData, radio.getRSSI());
+        radio.startReceive();
     }
 
-    // 2) BLE [위치 측정] 명령 수신 시 연산 실행
+    // 노드별 수신 생존 상태 주기적 알림
+    checkAndSendNodeStatus();
+
+    // 측정 시작 명령 수신 시 삼각측량 실행
     if (triggerSnapshot) {
         triggerSnapshot = false;
         runTrilaterationSnapshot();
