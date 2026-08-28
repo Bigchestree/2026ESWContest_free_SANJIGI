@@ -30,18 +30,17 @@ void setup() {
     digitalWrite(LORA_NRST, LOW);
     delay(20);
     digitalWrite(LORA_NRST, HIGH);
-    delay(100); // 칩 내부 LDO 안정화 대기
+    delay(100); // 칩 내부 LDO/TCXO 안정화 대기
 
     // 2. SPI 통신 시작
     loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
-    // 3. SX1262 초기화
-    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
+    // 3. SX1262 초기화 (TCXO 1.6V, LDO 모드 적용)
+    // begin(freq, bw, sf, cr, syncWord, power, currentLimit, tcxoVoltage, useRegulatorLDO)
+    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8, 1.6, true);
 
     if (state == RADIOLIB_ERR_NONE) {
-        // Wio-SX1262 전용 전원/안테나 제어 (BUSY 타임아웃 방지)
-        radio.setRegulatorMode(RADIOLIB_SX126X_REGULATOR_LDO);
-        radio.setTCXO(1.6);
+        // RF 스위치 제어 설정
         radio.setDio2AsRfSwitch(true);
 
         loraOK = true;
