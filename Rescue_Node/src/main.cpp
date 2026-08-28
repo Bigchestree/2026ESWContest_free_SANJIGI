@@ -2,44 +2,43 @@
 #include <RadioLib.h>
 #include <SPI.h>
 
-// XIAO ESP32-S3 + Wio-SX1262 GPIO 매핑
-#define LORA_NSS   1   // D1 (CS / NSS)
-#define LORA_BUSY  2   // D2 (BUSY)
-#define LORA_NRST  3   // D3 (RESET)
-#define LORA_DIO1  4   // D4 (DIO1)
+// XIAO ESP32-S3 + Wio-SX1262 표준 아두이노 핀 정의
+#define LORA_NSS   D1   // Chip Select (GPIO 1)
+#define LORA_BUSY  D2   // Busy (GPIO 2)
+#define LORA_NRST  D3   // Reset (GPIO 3)
+#define LORA_DIO1  D4   // DIO1 (GPIO 4)
 
-#define LORA_SCK   7   // D8 (SCK)
-#define LORA_MISO  8   // D9 (MISO)
-#define LORA_MOSI  9   // D10 (MOSI)
+#define LORA_SCK   D8   // SCK (GPIO 7)
+#define LORA_MISO  D9   // MISO (GPIO 8)
+#define LORA_MOSI  D10  // MOSI (GPIO 9)
 
-SPIClass loraSPI(FSPI);
-SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY, loraSPI);
+// 기본 SPI 버스 사용
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY);
 
 bool loraOK = false;
+int initErrorCode = 0;
 
 void setup() {
     Serial.begin(115200);
     delay(2000);
 
     Serial.println("\n==========================================");
-    Serial.println("   [+] Wio-SX1262 Tx Power Fix Mode...    ");
+    Serial.println("   [+] Standard SPI LoRa Init Test...     ");
     Serial.println("==========================================");
 
-    // SPI 버스 시작
-    loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+    // 1. SPI 기본 버스 시작 (D8, D9, D10)
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
-    // 1. 라디오 기본 초기화 (주파수 923.0MHz, BW 125.0kHz, SF 9, CR 7, SyncWord 0x12, TxPower 10dBm)
-    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
+    // 2. SX1262 초기화 시도
+    initErrorCode = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
 
-    if (state == RADIOLIB_ERR_NONE) {
-        // 2. Wio-SX1262 온보드 TCXO(전원) 제어 구문
+    if (initErrorCode == RADIOLIB_ERR_NONE) {
         radio.setTCXO(1.6);
         radio.setDio2AsRfSwitch(true);
-
         loraOK = true;
         Serial.println(" [SUCCESS] LoRa Radio Init Success!");
     } else {
-        Serial.printf(" [FAIL] Radio Init Failed! Code: %d\n", state);
+        Serial.printf(" [FAIL] Radio Init Failed! Code: %d\n", initErrorCode);
     }
     Serial.println("==========================================\n");
 }
@@ -47,8 +46,6 @@ void setup() {
 void loop() {
     if (loraOK) {
         String payload = "TARGET:PING,ALT:100.0";
-        
-        // 송신 시도
         int txState = radio.transmit(payload);
 
         if (txState == RADIOLIB_ERR_NONE) {
@@ -57,7 +54,7 @@ void loop() {
             Serial.printf("[TX Fail] Code: %d\n", txState);
         }
     } else {
-        Serial.println("[Waiting] LoRa not ready...");
+        Serial.printf("[RETRY] Waiting... Error Code: %d\n", initErrorCode);
     }
 
     delay(1000);
