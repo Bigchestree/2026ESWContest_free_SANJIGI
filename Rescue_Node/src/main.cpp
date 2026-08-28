@@ -34,7 +34,7 @@ void setup() {
     if (state == RADIOLIB_ERR_NONE) {
         // 2. Wio-SX1262 온보드 TCXO(전원) 제어 구문
         radio.setTCXO(1.6);
-        radio.setDIO2AsRfSwitch(true);
+        radio.setDio2AsRfSwitch(true);
 
         loraOK = true;
         Serial.println(" [SUCCESS] LoRa Radio Init Success!");
