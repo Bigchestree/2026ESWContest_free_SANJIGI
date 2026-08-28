@@ -6,7 +6,7 @@
 // 앵커 2 업로드 시: #define ANCHOR_NUM 2
 // 앵커 3 업로드 시: #define ANCHOR_NUM 3
 // ==========================================
-#define ANCHOR_NUM 2  
+#define ANCHOR_NUM 3
 
 #define LORA_NSS   D1
 #define LORA_BUSY  D2

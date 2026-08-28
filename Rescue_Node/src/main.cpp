@@ -15,11 +15,9 @@ Adafruit_BME280 bme; // BME280 기압/온습도 센서
 
 void setup() {
     Serial.begin(115200);
-
-    // 1. BME280 센서 초기화 (I2C 주소 0x76 또는 0x77)
-    if (!bme.begin(0x76)) {
-        Serial.println("BME280 Sensor Not Found! Check Wiring/I2C Address.");
-    }
+    delay(2000);
+    Wire.begin(D4, D5);
+    Serial.println("\n--- I2C Scanner Running ---");
 
     // 2. Wio-SX1262 LoRa 초기화 (923MHz 규격)
     int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8);
@@ -29,6 +27,25 @@ void setup() {
 }
 
 void loop() {
+    byte error, address;
+    int nDevices = 0;
+
+    for (address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+
+        if (error == 0) {
+            Serial.printf("I2C 장치 발견! 주소: 0x%02X\n", address);
+            nDevices++;
+        }
+    }
+
+    if (nDevices == 0) {
+        Serial.println("연결된 I2C 장치를 찾을 수 없습니다.");
+    }
+    
+    delay(3000);
+    
     // 해수면 표준 기압(1013.25 hPa) 기준 현재 고도(m) 측정
     float altitude = bme.readAltitude(1013.25);
 
