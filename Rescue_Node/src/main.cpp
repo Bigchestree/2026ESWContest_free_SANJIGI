@@ -15,6 +15,12 @@ Adafruit_BME280 bme; // BME280 기압/온습도 센서
 
 void setup() {
     Serial.begin(115200);
+    // USB 시리얼 포트가 연결될 때까지 최대 3초 대기
+    unsigned long start = millis();
+    while (!Serial && (millis() - start < 3000));
+    
+    delay(500);
+    Serial.println("\n--- Target Node Booting ---");
     delay(2000);
     Wire.begin(D4, D5);
     Serial.println("\n--- I2C Scanner Running ---");
@@ -45,7 +51,7 @@ void loop() {
     }
     
     delay(3000);
-    
+
     // 해수면 표준 기압(1013.25 hPa) 기준 현재 고도(m) 측정
     float altitude = bme.readAltitude(1013.25);
 
