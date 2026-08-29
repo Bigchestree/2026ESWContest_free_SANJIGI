@@ -138,6 +138,7 @@ BLECharacteristic* pDataChar = nullptr;
 
 bool deviceConnected = false;
 
+unsigned long lastStatTime = 0;
 
 // =====================================================
 // BLE SERVER CALLBACK
@@ -222,6 +223,33 @@ void sendBle(
     }
 }
 
+void sendStat() {
+
+    int targetAlive =
+        targetBuffer.isAlive() ? 1 : 0;
+
+    int anchor2Alive =
+        anchor2Buffer.isAlive() ? 1 : 0;
+
+    int anchor3Alive =
+        anchor3Buffer.isAlive() ? 1 : 0;
+
+    String stat =
+        "STAT:"
+        + String(targetAlive)
+        + ","
+        + String(anchor2Alive)
+        + ","
+        + String(anchor3Alive)
+        + ","
+        + String(targetBuffer.median)
+        + ","
+        + String(anchor2Buffer.median)
+        + ","
+        + String(anchor3Buffer.median);
+
+    sendBle(stat);
+}
 
 // =====================================================
 // TARGET 패킷 처리
@@ -679,12 +707,23 @@ void setup() {
 // =====================================================
 // LOOP
 // =====================================================
+
 void loop() {
 
+    // =================================================
+    // 1초마다 HTML로 상태 전송
+    // =================================================
+    if (millis() - lastStatTime >= 1000) {
+
+        lastStatTime = millis();
+
+        sendStat();
+    }
+
+    // LoRa 패킷이 없으면 여기서 종료
     if (!receivedFlag) {
         return;
     }
-
     receivedFlag = false;
 
     String msg;
