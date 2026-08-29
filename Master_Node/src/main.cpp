@@ -7,6 +7,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
+#include <algorithm>
+
 // =====================================================
 // LoRa PIN
 // =====================================================
@@ -39,8 +41,54 @@ void setFlag() {
 }
 
 // =====================================================
+// RSSI 5개 버퍼
+// =====================================================
+int rssiBuffer[5];
+int rssiIndex = 0;
+int rssiCount = 0;
+
+int medianRssi = -999;
+
+// =====================================================
+// RSSI 추가
+// =====================================================
+void addRssi(int rssi) {
+
+    rssiBuffer[rssiIndex] = rssi;
+
+    rssiIndex++;
+
+    if (rssiIndex >= 5) {
+        rssiIndex = 0;
+    }
+
+    if (rssiCount < 5) {
+        rssiCount++;
+    }
+}
+
+// =====================================================
+// 중앙값 계산
+// =====================================================
+int calculateMedianRssi() {
+
+    if (rssiCount < 5) {
+        return -999;
+    }
+
+    int temp[5];
+
+    for (int i = 0; i < 5; i++) {
+        temp[i] = rssiBuffer[i];
+    }
+
+    std::sort(temp, temp + 5);
+
+    return temp[2];
+}
+
+// =====================================================
 // BLE UUID
-// 기존 HTML과 동일
 // =====================================================
 #define SERVICE_UUID   "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_CMD_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -74,8 +122,6 @@ class ServerCallbacks : public BLEServerCallbacks {
 
 // =====================================================
 // BLE COMMAND CALLBACK
-// 아직 MEASURE 기능은 넣지 않음
-// 수신 여부만 확인
 // =====================================================
 class CommandCallbacks : public BLECharacteristicCallbacks {
 
@@ -120,7 +166,7 @@ void setup() {
 
     Serial.println();
     Serial.println("=========================");
-    Serial.println("MASTER LoRa + BLE TEST");
+    Serial.println("MASTER LoRa + BLE + RSSI");
     Serial.println("=========================");
 
     // =================================================
@@ -187,10 +233,6 @@ void setup() {
     // =================================================
     // BLE
     // =================================================
-    Serial.println(
-        "[BLE] START"
-    );
-
     BLEDevice::init(
         "Master_Rescue_Node"
     );
@@ -207,7 +249,6 @@ void setup() {
             SERVICE_UUID
         );
 
-    // BLE COMMAND
     BLECharacteristic* pCmdChar =
         pService->createCharacteristic(
             CHAR_CMD_UUID,
@@ -218,7 +259,6 @@ void setup() {
         new CommandCallbacks()
     );
 
-    // BLE DATA
     pDataChar =
         pService->createCharacteristic(
             CHAR_DATA_UUID,
@@ -241,13 +281,8 @@ void setup() {
 
     pAdvertising->start();
 
-    Serial.println(
-        "[BLE] READY"
-    );
-
-    Serial.println(
-        "WAITING FOR TARGET..."
-    );
+    Serial.println("[BLE] READY");
+    Serial.println("WAITING FOR TARGET...");
 }
 
 // =====================================================
@@ -271,46 +306,52 @@ void loop() {
             RADIOLIB_ERR_NONE
         ) {
 
-            float rssi =
-                radio.getRSSI();
+            int rssi =
+                (int)radio.getRSSI();
 
             float snr =
                 radio.getSNR();
 
             Serial.println();
-            Serial.println(
-                "------------------------"
-            );
+            Serial.println("------------------------");
 
-            Serial.print(
-                "DATA : "
-            );
+            Serial.print("DATA   : ");
+            Serial.println(msg);
 
-            Serial.println(
-                msg
-            );
+            Serial.print("RSSI   : ");
+            Serial.println(rssi);
 
-            Serial.print(
-                "RSSI : "
-            );
+            Serial.print("SNR    : ");
+            Serial.println(snr);
 
-            Serial.println(
-                rssi
-            );
+            // =========================================
+            // TARGET 패킷일 때만 RSSI 저장
+            // =========================================
+            if (
+                msg.startsWith(
+                    "TARGET:PING"
+                )
+            ) {
 
-            Serial.print(
-                "SNR  : "
-            );
+                addRssi(rssi);
 
-            Serial.println(
-                snr
-            );
+                Serial.print("SAMPLE : ");
+                Serial.print(rssiCount);
+                Serial.println("/5");
 
-            Serial.println(
-                "------------------------"
-            );
+                if (rssiCount == 5) {
 
-            // BLE로 그대로 전달
+                    medianRssi =
+                        calculateMedianRssi();
+
+                    Serial.print("MEDIAN : ");
+                    Serial.println(medianRssi);
+                }
+            }
+
+            Serial.println("------------------------");
+
+            // 기존 BLE 전달 유지
             sendBle(msg);
 
         } else {
@@ -324,7 +365,7 @@ void loop() {
             );
         }
 
-        // 다음 LoRa 패킷 대기
+        // 다음 LoRa 패킷 수신
         int rxState =
             radio.startReceive();
 
