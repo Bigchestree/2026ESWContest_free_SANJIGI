@@ -41,51 +41,91 @@ void setFlag() {
 }
 
 // =====================================================
-// RSSI 5개 버퍼
+// RSSI BUFFER 구조체
 // =====================================================
-int rssiBuffer[5];
-int rssiIndex = 0;
-int rssiCount = 0;
+struct RssiBuffer {
 
-int medianRssi = -999;
+    int data[5];
 
-// =====================================================
-// RSSI 추가
-// =====================================================
-void addRssi(int rssi) {
+    int index = 0;
+    int count = 0;
 
-    rssiBuffer[rssiIndex] = rssi;
+    int median = -999;
 
-    rssiIndex++;
+    unsigned long lastRxTime = 0;
 
-    if (rssiIndex >= 5) {
-        rssiIndex = 0;
+    // -------------------------------------------------
+    // RSSI 추가
+    // -------------------------------------------------
+    void add(int rssi) {
+
+        data[index] = rssi;
+
+        index++;
+
+        if (index >= 5) {
+            index = 0;
+        }
+
+        if (count < 5) {
+            count++;
+        }
+
+        lastRxTime = millis();
+
+        // 5개가 모이면 중앙값 계산
+        if (count == 5) {
+
+            int temp[5];
+
+            for (int i = 0; i < 5; i++) {
+                temp[i] = data[i];
+            }
+
+            std::sort(
+                temp,
+                temp + 5
+            );
+
+            median = temp[2];
+        }
     }
 
-    if (rssiCount < 5) {
-        rssiCount++;
+    // -------------------------------------------------
+    // 살아있는 노드인지
+    // -------------------------------------------------
+    bool isAlive() {
+
+        return
+            count > 0 &&
+            (
+                millis() -
+                lastRxTime
+                <
+                5000
+            );
     }
-}
+};
 
 // =====================================================
-// 중앙값 계산
+// 각각 별도 RSSI BUFFER
 // =====================================================
-int calculateMedianRssi() {
 
-    if (rssiCount < 5) {
-        return -999;
-    }
+// 마스터가 조난자를 직접 받은 RSSI
+RssiBuffer targetBuffer;
 
-    int temp[5];
+// 앵커2가 조난자를 받은 RSSI
+RssiBuffer anchor2Buffer;
 
-    for (int i = 0; i < 5; i++) {
-        temp[i] = rssiBuffer[i];
-    }
+// 앵커3가 조난자를 받은 RSSI
+RssiBuffer anchor3Buffer;
 
-    std::sort(temp, temp + 5);
 
-    return temp[2];
-}
+// =====================================================
+// 조난자 고도
+// =====================================================
+float targetAltitude = 0.0;
+
 
 // =====================================================
 // BLE UUID
@@ -98,47 +138,68 @@ BLECharacteristic* pDataChar = nullptr;
 
 bool deviceConnected = false;
 
+
 // =====================================================
 // BLE SERVER CALLBACK
 // =====================================================
 class ServerCallbacks : public BLEServerCallbacks {
 
-    void onConnect(BLEServer* pServer) override {
+    void onConnect(
+        BLEServer* pServer
+    ) override {
 
         deviceConnected = true;
 
-        Serial.println("[BLE] CONNECTED");
+        Serial.println(
+            "[BLE] CONNECTED"
+        );
     }
 
-    void onDisconnect(BLEServer* pServer) override {
+    void onDisconnect(
+        BLEServer* pServer
+    ) override {
 
         deviceConnected = false;
 
-        Serial.println("[BLE] DISCONNECTED");
+        Serial.println(
+            "[BLE] DISCONNECTED"
+        );
 
         BLEDevice::startAdvertising();
     }
 };
 
+
 // =====================================================
 // BLE COMMAND CALLBACK
 // =====================================================
-class CommandCallbacks : public BLECharacteristicCallbacks {
+class CommandCallbacks :
+    public BLECharacteristicCallbacks {
 
-    void onWrite(BLECharacteristic* pChar) override {
+    void onWrite(
+        BLECharacteristic* pChar
+    ) override {
 
         String value =
             pChar->getValue().c_str();
 
-        Serial.print("[BLE CMD] ");
-        Serial.println(value);
+        Serial.print(
+            "[BLE CMD] "
+        );
+
+        Serial.println(
+            value
+        );
     }
 };
+
 
 // =====================================================
 // BLE Notify
 // =====================================================
-void sendBle(String msg) {
+void sendBle(
+    String msg
+) {
 
     if (
         deviceConnected &&
@@ -151,23 +212,337 @@ void sendBle(String msg) {
 
         pDataChar->notify();
 
-        Serial.print("[BLE TX] ");
-        Serial.println(msg);
+        Serial.print(
+            "[BLE TX] "
+        );
+
+        Serial.println(
+            msg
+        );
     }
 }
+
+
+// =====================================================
+// TARGET 패킷 처리
+// =====================================================
+void processTarget(
+    String msg,
+    int directRssi
+) {
+
+    // 직접 RSSI 저장
+    targetBuffer.add(
+        directRssi
+    );
+
+    // ALT 추출
+    int altIndex =
+        msg.indexOf(
+            "ALT:"
+        );
+
+    if (altIndex != -1) {
+
+        targetAltitude =
+            msg.substring(
+                altIndex + 4
+            ).toFloat();
+    }
+
+    Serial.println();
+    Serial.println(
+        "[TARGET]"
+    );
+
+    Serial.print(
+        "RSSI   : "
+    );
+
+    Serial.println(
+        directRssi
+    );
+
+    Serial.print(
+        "SAMPLE : "
+    );
+
+    Serial.print(
+        targetBuffer.count
+    );
+
+    Serial.println(
+        "/5"
+    );
+
+    if (
+        targetBuffer.median !=
+        -999
+    ) {
+
+        Serial.print(
+            "MEDIAN : "
+        );
+
+        Serial.println(
+            targetBuffer.median
+        );
+    }
+
+    Serial.print(
+        "ALT    : "
+    );
+
+    Serial.println(
+        targetAltitude
+    );
+}
+
+
+// =====================================================
+// ANCHOR2 패킷 처리
+// =====================================================
+void processAnchor2(
+    String msg
+) {
+
+    int rssiIndex =
+        msg.indexOf(
+            "RSSI:"
+        );
+
+    if (rssiIndex == -1) {
+        return;
+    }
+
+    int altIndex =
+        msg.indexOf(
+            ",ALT:"
+        );
+
+    String rssiText;
+
+    if (altIndex != -1) {
+
+        rssiText =
+            msg.substring(
+                rssiIndex + 5,
+                altIndex
+            );
+
+    } else {
+
+        rssiText =
+            msg.substring(
+                rssiIndex + 5
+            );
+    }
+
+    int anchorRssi =
+        rssiText.toInt();
+
+    anchor2Buffer.add(
+        anchorRssi
+    );
+
+    Serial.println();
+    Serial.println(
+        "[ANCHOR2]"
+    );
+
+    Serial.print(
+        "TARGET RSSI : "
+    );
+
+    Serial.println(
+        anchorRssi
+    );
+
+    Serial.print(
+        "SAMPLE      : "
+    );
+
+    Serial.print(
+        anchor2Buffer.count
+    );
+
+    Serial.println(
+        "/5"
+    );
+
+    if (
+        anchor2Buffer.median !=
+        -999
+    ) {
+
+        Serial.print(
+            "MEDIAN      : "
+        );
+
+        Serial.println(
+            anchor2Buffer.median
+        );
+    }
+}
+
+
+// =====================================================
+// ANCHOR3 패킷 처리
+// =====================================================
+void processAnchor3(
+    String msg
+) {
+
+    int rssiIndex =
+        msg.indexOf(
+            "RSSI:"
+        );
+
+    if (rssiIndex == -1) {
+        return;
+    }
+
+    int altIndex =
+        msg.indexOf(
+            ",ALT:"
+        );
+
+    String rssiText;
+
+    if (altIndex != -1) {
+
+        rssiText =
+            msg.substring(
+                rssiIndex + 5,
+                altIndex
+            );
+
+    } else {
+
+        rssiText =
+            msg.substring(
+                rssiIndex + 5
+            );
+    }
+
+    int anchorRssi =
+        rssiText.toInt();
+
+    anchor3Buffer.add(
+        anchorRssi
+    );
+
+    Serial.println();
+    Serial.println(
+        "[ANCHOR3]"
+    );
+
+    Serial.print(
+        "TARGET RSSI : "
+    );
+
+    Serial.println(
+        anchorRssi
+    );
+
+    Serial.print(
+        "SAMPLE      : "
+    );
+
+    Serial.print(
+        anchor3Buffer.count
+    );
+
+    Serial.println(
+        "/5"
+    );
+
+    if (
+        anchor3Buffer.median !=
+        -999
+    ) {
+
+        Serial.print(
+            "MEDIAN      : "
+        );
+
+        Serial.println(
+            anchor3Buffer.median
+        );
+    }
+}
+
+
+// =====================================================
+// 현재 중앙값 상태 표시
+// =====================================================
+void printAllMedian() {
+
+    Serial.println();
+    Serial.println(
+        "=============================="
+    );
+
+    Serial.println(
+        "CURRENT MEDIAN RSSI"
+    );
+
+    Serial.print(
+        "TARGET  : "
+    );
+
+    Serial.println(
+        targetBuffer.median
+    );
+
+    Serial.print(
+        "ANCHOR2 : "
+    );
+
+    Serial.println(
+        anchor2Buffer.median
+    );
+
+    Serial.print(
+        "ANCHOR3 : "
+    );
+
+    Serial.println(
+        anchor3Buffer.median
+    );
+
+    Serial.println(
+        "=============================="
+    );
+}
+
 
 // =====================================================
 // SETUP
 // =====================================================
 void setup() {
 
-    Serial.begin(115200);
-    delay(3000);
+    Serial.begin(
+        115200
+    );
+
+    delay(
+        3000
+    );
 
     Serial.println();
-    Serial.println("=========================");
-    Serial.println("MASTER LoRa + BLE + RSSI");
-    Serial.println("=========================");
+    Serial.println(
+        "================================"
+    );
+
+    Serial.println(
+        "MASTER 3-RSSI TEST"
+    );
+
+    Serial.println(
+        "================================"
+    );
+
 
     // =================================================
     // SPI
@@ -179,25 +554,34 @@ void setup() {
         LORA_NSS
     );
 
-    Serial.println("[SPI] OK");
+    Serial.println(
+        "[SPI] OK"
+    );
+
 
     // =================================================
     // LoRa
     // =================================================
-    int state = radio.begin(
-        923.0,
-        125.0,
-        9,
-        7,
-        0x12,
-        10,
-        8,
-        1.8,
-        false
+    int state =
+        radio.begin(
+            923.0,
+            125.0,
+            9,
+            7,
+            0x12,
+            10,
+            8,
+            1.8,
+            false
+        );
+
+    Serial.print(
+        "[LoRa begin] "
     );
 
-    Serial.print("[LoRa begin] ");
-    Serial.println(state);
+    Serial.println(
+        state
+    );
 
     if (
         state !=
@@ -229,6 +613,7 @@ void setup() {
     Serial.println(
         state
     );
+
 
     // =================================================
     // BLE
@@ -281,106 +666,171 @@ void setup() {
 
     pAdvertising->start();
 
-    Serial.println("[BLE] READY");
-    Serial.println("WAITING FOR TARGET...");
+    Serial.println(
+        "[BLE] READY"
+    );
+
+    Serial.println(
+        "WAITING FOR TARGET / ANCHOR2 / ANCHOR3..."
+    );
 }
+
 
 // =====================================================
 // LOOP
 // =====================================================
 void loop() {
 
-    if (receivedFlag) {
+    if (!receivedFlag) {
+        return;
+    }
 
-        receivedFlag = false;
+    receivedFlag = false;
 
-        String msg;
+    String msg;
 
-        int state =
-            radio.readData(
-                msg
-            );
+    int state =
+        radio.readData(
+            msg
+        );
 
-        if (
-            state ==
-            RADIOLIB_ERR_NONE
-        ) {
+    if (
+        state !=
+        RADIOLIB_ERR_NONE
+    ) {
 
-            int rssi =
-                (int)radio.getRSSI();
+        Serial.print(
+            "[RX ERROR] "
+        );
 
-            float snr =
-                radio.getSNR();
+        Serial.println(
+            state
+        );
 
-            Serial.println();
-            Serial.println("------------------------");
+        radio.startReceive();
 
-            Serial.print("DATA   : ");
-            Serial.println(msg);
+        return;
+    }
 
-            Serial.print("RSSI   : ");
-            Serial.println(rssi);
+    // =================================================
+    // 마스터가 실제로 받은 패킷 RSSI
+    // =================================================
+    int directRssi =
+        (int)radio.getRSSI();
 
-            Serial.print("SNR    : ");
-            Serial.println(snr);
+    float snr =
+        radio.getSNR();
 
-            // =========================================
-            // TARGET 패킷일 때만 RSSI 저장
-            // =========================================
-            if (
-                msg.startsWith(
-                    "TARGET:PING"
-                )
-            ) {
+    Serial.println();
+    Serial.println(
+        "------------------------------"
+    );
 
-                addRssi(rssi);
+    Serial.print(
+        "DATA : "
+    );
 
-                Serial.print("SAMPLE : ");
-                Serial.print(rssiCount);
-                Serial.println("/5");
+    Serial.println(
+        msg
+    );
 
-                if (rssiCount == 5) {
+    Serial.print(
+        "DIRECT RSSI : "
+    );
 
-                    medianRssi =
-                        calculateMedianRssi();
+    Serial.println(
+        directRssi
+    );
 
-                    Serial.print("MEDIAN : ");
-                    Serial.println(medianRssi);
-                }
-            }
+    Serial.print(
+        "SNR : "
+    );
 
-            Serial.println("------------------------");
+    Serial.println(
+        snr
+    );
 
-            // 기존 BLE 전달 유지
-            sendBle(msg);
 
-        } else {
+    // =================================================
+    // 패킷 종류 구분
+    // =================================================
+    if (
+        msg.startsWith(
+            "TARGET:PING"
+        )
+    ) {
 
-            Serial.print(
-                "[RX ERROR] "
-            );
+        processTarget(
+            msg,
+            directRssi
+        );
+    }
 
-            Serial.println(
-                state
-            );
-        }
+    else if (
+        msg.startsWith(
+            "ANCHOR2:"
+        )
+    ) {
 
-        // 다음 LoRa 패킷 수신
-        int rxState =
-            radio.startReceive();
+        processAnchor2(
+            msg
+        );
+    }
 
-        if (
-            rxState !=
-            RADIOLIB_ERR_NONE
-        ) {
+    else if (
+        msg.startsWith(
+            "ANCHOR3:"
+        )
+    ) {
 
-            Serial.print(
-                "[RX RESTART FAIL] "
-            );
+        processAnchor3(
+            msg
+        );
+    }
 
-            Serial.println(
-                rxState
-            );
-        }
+    else {
+
+        Serial.println(
+            "[UNKNOWN PACKET]"
+        );
+    }
+
+    Serial.println(
+        "------------------------------"
+    );
+
+
+    // =================================================
+    // 현재 중앙값 확인
+    // =================================================
+    printAllMedian();
+
+
+    // =================================================
+    // BLE로 원본 패킷 전달
+    // =================================================
+    sendBle(
+        msg
+    );
+
+
+    // =================================================
+    // 다시 수신모드
+    // =================================================
+    int rxState =
+        radio.startReceive();
+
+    if (
+        rxState !=
+        RADIOLIB_ERR_NONE
+    ) {
+
+        Serial.print(
+            "[RX RESTART FAIL] "
+        );
+
+        Serial.println(
+            rxState
+        );
     }
 }
