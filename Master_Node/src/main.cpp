@@ -496,6 +496,7 @@ class CommandCallbacks :
 
         Serial.println("==============================");
     }
+    }
 };
 
 
@@ -1239,4 +1240,3 @@ void loop() {
         );
     }
 }
-};
