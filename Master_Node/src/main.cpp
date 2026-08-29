@@ -194,6 +194,14 @@ class CommandCallbacks :
     // =================================================
     if (value == "MEASURE") {
 
+        int rssi1 = targetBuffer.median;
+        int rssi2 = anchor2Buffer.median;
+        int rssi3 = anchor3Buffer.median;    
+
+        float d1 = rssiToDistance(rssi1);
+        float d2 = rssiToDistance(rssi2);
+        float d3 = rssiToDistance(rssi3);
+        
         Serial.println();
         Serial.println("==============================");
         Serial.println("MEASURE SNAPSHOT");
@@ -216,10 +224,6 @@ class CommandCallbacks :
             medianOK
         ) {
 
-            int rssi1 = targetBuffer.median;
-            int rssi2 = anchor2Buffer.median;
-            int rssi3 = anchor3Buffer.median;
-
             Serial.print("MASTER  RSSI : ");
             Serial.println(rssi1);
 
@@ -228,6 +232,20 @@ class CommandCallbacks :
 
             Serial.print("ANCHOR3 RSSI : ");
             Serial.println(rssi3);
+
+            Serial.println("------------------------------");
+
+            Serial.print("MASTER  DIST : ");
+            Serial.print(d1, 2);
+            Serial.println(" m");
+
+            Serial.print("ANCHOR2 DIST : ");
+            Serial.print(d2, 2);
+            Serial.println(" m");
+
+            Serial.print("ANCHOR3 DIST : ");
+            Serial.print(d3, 2);
+            Serial.println(" m");
 
             Serial.print("ALT          : ");
             Serial.println(targetAltitude);
@@ -316,6 +334,27 @@ void sendStat() {
         + String(anchor3Buffer.median);
 
     sendBle(stat);
+}
+
+// =====================================================
+// RSSI -> 거리(m)
+// 현재는 테스트용 기본값
+// A = 1m 거리에서 RSSI 기준값
+// n = 환경 계수
+// =====================================================
+float rssiToDistance(int rssi) {
+
+    const int A = -40;
+    const float n = 2.8;
+
+    float distance =
+        pow(
+            10.0,
+            (float)(A - rssi) /
+            (10.0 * n)
+        );
+
+    return distance;
 }
 
 // =====================================================
