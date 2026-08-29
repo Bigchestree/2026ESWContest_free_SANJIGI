@@ -219,7 +219,7 @@ void loop() {
             relayDelay = 100;      // 앵커2 먼저
         }
         else if (ANCHOR_NUM == 3) {
-            relayDelay = 500;      // 앵커3 나중
+            relayDelay = 700;      // 앵커3 나중
         }
         else {
             relayDelay = 100;
