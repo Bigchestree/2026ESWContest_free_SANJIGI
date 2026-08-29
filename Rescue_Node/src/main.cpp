@@ -1,13 +1,27 @@
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_BME280.h>
 
-// Wio-SX1262 소켓 전용 물리 GPIO 번호
+// =====================================================
+// SANJIGI TARGET NODE
+// XIAO ESP32-S3 + Wio-SX1262 + BME280 1개
+//
+// BME280:
+//   VCC -> 3V3
+//   GND -> GND
+//   SDA -> D4 / GPIO5
+//   SCL -> D5 / GPIO6
+//
+// ALT 값은 "전원 켠 위치 = 0m" 기준 상대고도입니다.
+// =====================================================
+
+// ---------------- LoRa ----------------
 #define LORA_NSS     41
 #define LORA_BUSY    40
 #define LORA_NRST    42
 #define LORA_DIO1    39
-
 #define LORA_SCK      7
 #define LORA_MISO     8
 #define LORA_MOSI     9
@@ -23,54 +37,195 @@ SX1262 radio = new Module(
     loraSPI
 );
 
-bool loraOK = false;
+// ---------------- BME280 ----------------
+#define BME_SDA 5
+#define BME_SCL 6
+
+Adafruit_BME280 bme;
+
+bool bmeOK = false;
+float basePressurePa = 0.0f;
+
+// =====================================================
+// 시작 위치의 기압을 평균내서 Z=0 기준점 생성
+// =====================================================
+bool calibrateBasePressure() {
+
+    const int SAMPLE_COUNT = 30;
+
+    float sum = 0.0f;
+    int validCount = 0;
+
+    Serial.println();
+    Serial.println("[BME] 상대고도 기준점 측정 중...");
+
+    for (int i = 0; i < SAMPLE_COUNT; i++) {
+
+        float p = bme.readPressure();
+
+        if (!isnan(p) && p > 10000.0f) {
+            sum += p;
+            validCount++;
+        }
+
+        delay(100);
+    }
+
+    if (validCount < 10) {
+        Serial.println("[BME ERROR] 기준 기압 측정 실패");
+        return false;
+    }
+
+    basePressurePa = sum / validCount;
+
+    Serial.print("[BME] 기준 기압 = ");
+    Serial.print(basePressurePa / 100.0f, 2);
+    Serial.println(" hPa");
+
+    Serial.println("[BME] 현재 위치를 Z = 0.00m 로 설정");
+    Serial.println();
+
+    return true;
+}
+
+// =====================================================
+// 현재 기압을 시작점 기준 상대고도(m)로 변환
+//
+// h = 44330 * (1 - (P/P0)^0.1903)
+// =====================================================
+float readRelativeAltitude() {
+
+    if (!bmeOK || basePressurePa <= 0.0f) {
+        return 0.0f;
+    }
+
+    float pressurePa = bme.readPressure();
+
+    if (isnan(pressurePa) || pressurePa <= 10000.0f) {
+        return 0.0f;
+    }
+
+    float ratio = pressurePa / basePressurePa;
+
+    float altitude =
+        44330.0f *
+        (1.0f - powf(ratio, 0.19029495f));
+
+    return altitude;
+}
 
 void setup() {
+
     Serial.begin(115200);
-    delay(2000);
+    delay(1500);
 
-    Serial.println("\n==========================================");
-    Serial.println("   [+] Wio-SX1262 LDO/TCXO Fix Mode...    ");
-    Serial.println("==========================================");
+    Serial.println();
+    Serial.println("======================================");
+    Serial.println(" SANJIGI TARGET + BME280");
+    Serial.println("======================================");
 
-    // 1. 하드웨어 강제 리셋 (BUSY 핀 해제)
-    pinMode(LORA_NRST, OUTPUT);
-    digitalWrite(LORA_NRST, LOW);
-    delay(20);
-    digitalWrite(LORA_NRST, HIGH);
-    delay(100); // 칩 내부 LDO/TCXO 안정화 대기
+    // =================================================
+    // BME280 초기화
+    // =================================================
+    Wire.begin(BME_SDA, BME_SCL);
 
-    // 2. SPI 통신 시작
-    loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
-
-    // 3. SX1262 초기화 (TCXO 1.6V, LDO 모드 적용)
-    // begin(freq, bw, sf, cr, syncWord, power, currentLimit, tcxoVoltage, useRegulatorLDO)
-    int state = radio.begin(923.0, 125.0, 9, 7, 0x12, 10, 8, 1.8, false);
-
-    if (state == RADIOLIB_ERR_NONE) {
-        // RF 스위치 제어 설정
-        radio.setDio2AsRfSwitch(true);
-
-        loraOK = true;
-        Serial.println(" [SUCCESS] LoRa Radio Init Success!");
-    } else {
-        Serial.printf(" [FAIL] Radio Init Failed! Code: %d\n", state);
+    if (bme.begin(0x76, &Wire)) {
+        bmeOK = true;
+        Serial.println("[BME] 0x76 연결 성공");
     }
-    Serial.println("==========================================\n");
+    else if (bme.begin(0x77, &Wire)) {
+        bmeOK = true;
+        Serial.println("[BME] 0x77 연결 성공");
+    }
+    else {
+        Serial.println("[BME ERROR] 센서를 찾지 못했습니다.");
+        Serial.println("ALT는 임시로 0.00m 전송합니다.");
+    }
+
+    if (bmeOK) {
+
+        bme.setSampling(
+            Adafruit_BME280::MODE_NORMAL,
+            Adafruit_BME280::SAMPLING_X2,
+            Adafruit_BME280::SAMPLING_X16,
+            Adafruit_BME280::SAMPLING_X1,
+            Adafruit_BME280::FILTER_X16,
+            Adafruit_BME280::STANDBY_MS_500
+        );
+
+        if (!calibrateBasePressure()) {
+            bmeOK = false;
+        }
+    }
+
+    // =================================================
+    // LoRa 초기화
+    // =================================================
+    loraSPI.begin(
+        LORA_SCK,
+        LORA_MISO,
+        LORA_MOSI,
+        LORA_NSS
+    );
+
+    int state = radio.begin(
+        923.0,
+        125.0,
+        9,
+        7,
+        0x12,
+        10,
+        8,
+        1.8,
+        false
+    );
+
+    if (state != RADIOLIB_ERR_NONE) {
+
+        Serial.print("[LoRa ERROR] Init Failed: ");
+        Serial.println(state);
+
+        while (true) {
+            delay(1000);
+        }
+    }
+
+    radio.setDio2AsRfSwitch(true);
+
+    Serial.println("[LoRa] Init Success");
+    Serial.println("======================================");
+    Serial.println();
 }
 
 void loop() {
-    if (loraOK) {
-        String payload = "TARGET:PING,ALT:100.0";
-        int txState = radio.transmit(payload);
 
-        if (txState == RADIOLIB_ERR_NONE) {
-            Serial.printf("[TX Success] Sent: %s\n", payload.c_str());
-        } else {
-            Serial.printf("[TX Fail] Code: %d\n", txState);
+    float altitude = readRelativeAltitude();
+
+    String payload =
+        "TARGET:PING,ALT:"
+        + String(altitude, 2);
+
+    int txState = radio.transmit(payload);
+
+    if (txState == RADIOLIB_ERR_NONE) {
+
+        Serial.print("[TX Success] ");
+        Serial.println(payload);
+
+        if (bmeOK) {
+            Serial.print("  Temp : ");
+            Serial.print(bme.readTemperature(), 1);
+            Serial.println(" C");
+
+            Serial.print("  Z    : ");
+            Serial.print(altitude, 2);
+            Serial.println(" m");
         }
-    } else {
-        Serial.println("[Waiting] LoRa module not initialized...");
+    }
+    else {
+
+        Serial.print("[TX Fail] ");
+        Serial.println(txState);
     }
 
     delay(1000);
