@@ -140,6 +140,178 @@ bool deviceConnected = false;
 
 unsigned long lastStatTime = 0;
 
+
+// =====================================================
+// 함수 사전 선언
+// =====================================================
+void sendBle(String msg);
+float rssiToDistance(int rssi);
+bool calculateAnchorCoordinates();
+bool trilaterate2D(float d1, float d2, float d3, float &x, float &y);
+
+
+// =====================================================
+// 앵커 간 실제 거리 입력(m)
+//
+// 현장에서 걸음/줄로 재서 이 3개만 수정
+// D12 = Master <-> Anchor2
+// D13 = Master <-> Anchor3
+// D23 = Anchor2 <-> Anchor3
+// =====================================================
+const float D12 = 20.0f;
+const float D13 = 23.0f;
+const float D23 = 18.0f;
+
+
+// =====================================================
+// 자동 계산되는 앵커 좌표
+//
+// Master  = (0, 0)
+// Anchor2 = (D12, 0)
+// Anchor3 = (anchor3X, anchor3Y)
+// =====================================================
+float anchor3X = 0.0f;
+float anchor3Y = 0.0f;
+
+
+// =====================================================
+// 앵커 좌표 자동 계산
+// 성공 true / 삼각형 성립 안 하면 false
+// =====================================================
+bool calculateAnchorCoordinates() {
+
+    // 삼각형 성립 조건
+    if (
+        D12 <= 0.0f ||
+        D13 <= 0.0f ||
+        D23 <= 0.0f
+    ) {
+        return false;
+    }
+
+    if (
+        D12 + D13 <= D23 ||
+        D12 + D23 <= D13 ||
+        D13 + D23 <= D12
+    ) {
+        return false;
+    }
+
+    anchor3X =
+        (
+            D12 * D12 +
+            D13 * D13 -
+            D23 * D23
+        )
+        /
+        (
+            2.0f * D12
+        );
+
+    float ySquared =
+        D13 * D13 -
+        anchor3X * anchor3X;
+
+    if (ySquared <= 0.0f) {
+        return false;
+    }
+
+    anchor3Y =
+        sqrt(ySquared);
+
+    return true;
+}
+
+
+// =====================================================
+// RSSI -> 거리(m)
+//
+// 현재 테스트값
+// A = 1m 기준 RSSI
+// n = 환경 감쇠계수
+// =====================================================
+float rssiToDistance(int rssi) {
+
+    const int A = -40;
+    const float n = 2.8f;
+
+    return pow(
+        10.0f,
+        (float)(A - rssi) /
+        (10.0f * n)
+    );
+}
+
+
+// =====================================================
+// 2D 삼변측량
+// =====================================================
+bool trilaterate2D(
+    float d1,
+    float d2,
+    float d3,
+    float &x,
+    float &y
+) {
+
+    // Anchor1 = Master = (0, 0)
+    const float ax = 0.0f;
+    const float ay = 0.0f;
+
+    // Anchor2 = (D12, 0)
+    const float bx = D12;
+    const float by = 0.0f;
+
+    // Anchor3 = 자동 계산 좌표
+    const float cx = anchor3X;
+    const float cy = anchor3Y;
+
+    float a11 = 2.0f * (bx - ax);
+    float a12 = 2.0f * (by - ay);
+
+    float a21 = 2.0f * (cx - ax);
+    float a22 = 2.0f * (cy - ay);
+
+    float b1 =
+        d1 * d1 -
+        d2 * d2 +
+        bx * bx +
+        by * by -
+        ax * ax -
+        ay * ay;
+
+    float b2 =
+        d1 * d1 -
+        d3 * d3 +
+        cx * cx +
+        cy * cy -
+        ax * ax -
+        ay * ay;
+
+    float det =
+        a11 * a22 -
+        a12 * a21;
+
+    if (fabs(det) < 0.0001f) {
+        return false;
+    }
+
+    x =
+        (
+            b1 * a22 -
+            a12 * b2
+        ) / det;
+
+    y =
+        (
+            a11 * b2 -
+            b1 * a21
+        ) / det;
+
+    return true;
+}
+
+
 // =====================================================
 // BLE SERVER CALLBACK
 // =====================================================
@@ -194,14 +366,6 @@ class CommandCallbacks :
     // =================================================
     if (value == "MEASURE") {
 
-        int rssi1 = targetBuffer.median;
-        int rssi2 = anchor2Buffer.median;
-        int rssi3 = anchor3Buffer.median;    
-
-        float d1 = rssiToDistance(rssi1);
-        float d2 = rssiToDistance(rssi2);
-        float d3 = rssiToDistance(rssi3);
-        
         Serial.println();
         Serial.println("==============================");
         Serial.println("MEASURE SNAPSHOT");
@@ -223,6 +387,14 @@ class CommandCallbacks :
             anchor3OK &&
             medianOK
         ) {
+
+            int rssi1 = targetBuffer.median;
+            int rssi2 = anchor2Buffer.median;
+            int rssi3 = anchor3Buffer.median;
+
+            float d1 = rssiToDistance(rssi1);
+            float d2 = rssiToDistance(rssi2);
+            float d3 = rssiToDistance(rssi3);
 
             Serial.print("MASTER  RSSI : ");
             Serial.println(rssi1);
@@ -247,10 +419,58 @@ class CommandCallbacks :
             Serial.print(d3, 2);
             Serial.println(" m");
 
-            Serial.print("ALT          : ");
-            Serial.println(targetAltitude);
+            float x = 0.0f;
+            float y = 0.0f;
 
-            Serial.println("[MEASURE READY]");
+            bool triOK =
+                trilaterate2D(
+                    d1,
+                    d2,
+                    d3,
+                    x,
+                    y
+                );
+
+            if (triOK) {
+
+                float z = targetAltitude;
+
+                Serial.println("------------------------------");
+
+                Serial.print("X            : ");
+                Serial.print(x, 2);
+                Serial.println(" m");
+
+                Serial.print("Y            : ");
+                Serial.print(y, 2);
+                Serial.println(" m");
+
+                Serial.print("Z(ALT)       : ");
+                Serial.print(z, 2);
+                Serial.println(" m");
+
+                String result =
+                    "RES:"
+                    + String(x, 2) + ","
+                    + String(y, 2) + ","
+                    + String(z, 2) + ","
+                    + String(d1, 2) + ","
+                    + String(d2, 2) + ","
+                    + String(d3, 2);
+
+                sendBle(result);
+
+                Serial.println("[MEASURE READY]");
+            }
+
+            else {
+
+                Serial.println("[TRILATERATION FAIL]");
+
+                sendBle(
+                    "ERR:TRILATERATION_FAIL"
+                );
+            }
         }
 
         else {
@@ -275,7 +495,6 @@ class CommandCallbacks :
         }
 
         Serial.println("==============================");
-    }
     }
 };
 
@@ -334,27 +553,6 @@ void sendStat() {
         + String(anchor3Buffer.median);
 
     sendBle(stat);
-}
-
-// =====================================================
-// RSSI -> 거리(m)
-// 현재는 테스트용 기본값
-// A = 1m 거리에서 RSSI 기준값
-// n = 환경 계수
-// =====================================================
-float rssiToDistance(int rssi) {
-
-    const int A = -40;
-    const float n = 2.8;
-
-    float distance =
-        pow(
-            10.0,
-            (float)(A - rssi) /
-            (10.0 * n)
-        );
-
-    return distance;
 }
 
 // =====================================================
@@ -677,6 +875,68 @@ void setup() {
         "================================"
     );
 
+    // =================================================
+    // 앵커 좌표 자동 계산
+    // =================================================
+    bool anchorOK =
+        calculateAnchorCoordinates();
+
+    if (!anchorOK) {
+
+        Serial.println(
+            "[FAIL] ANCHOR DISTANCE INVALID"
+        );
+
+        Serial.println(
+            "CHECK D12 / D13 / D23"
+        );
+
+        return;
+    }
+
+    Serial.println(
+        "[ANCHOR COORDINATES]"
+    );
+
+    Serial.println(
+        "MASTER  : (0.00, 0.00)"
+    );
+
+    Serial.print(
+        "ANCHOR2 : ("
+    );
+
+    Serial.print(
+        D12,
+        2
+    );
+
+    Serial.println(
+        ", 0.00)"
+    );
+
+    Serial.print(
+        "ANCHOR3 : ("
+    );
+
+    Serial.print(
+        anchor3X,
+        2
+    );
+
+    Serial.print(
+        ", "
+    );
+
+    Serial.print(
+        anchor3Y,
+        2
+    );
+
+    Serial.println(
+        ")"
+    );
+
 
     // =================================================
     // SPI
@@ -979,3 +1239,4 @@ void loop() {
         );
     }
 }
+};
