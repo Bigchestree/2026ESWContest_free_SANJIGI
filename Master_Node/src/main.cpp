@@ -8,13 +8,19 @@
 #include <BLE2902.h>
 
 #include <algorithm>
+#include <Preferences.h>
 
 // =====================================================
-// ★ 현장에서 여기 3개만 수정 ★
+// 앵커 거리 기본값(m)
+// 실제 값은 BLE SETDIST 명령으로 변경 + NVS 저장
+// SETDIST:D12,D13,D23
+// 예) SETDIST:20.0,23.0,18.0
 // =====================================================
-#define D12 20.0f   // Master  <-> Anchor2 거리(m)
-#define D13 23.0f   // Master  <-> Anchor3 거리(m)
-#define D23 18.0f   // Anchor2 <-> Anchor3 거리(m)
+float D12 = 20.0f;   // Master  <-> Anchor2
+float D13 = 23.0f;   // Master  <-> Anchor3
+float D23 = 18.0f;   // Anchor2 <-> Anchor3
+
+Preferences preferences;
 
 // =====================================================
 // LoRa PIN
@@ -365,6 +371,71 @@ class CommandCallbacks :
 
     Serial.print("[BLE CMD] ");
     Serial.println(value);
+
+    // =================================================
+    // 앵커 거리 설정 명령
+    // 형식: SETDIST:D12,D13,D23
+    // 예) SETDIST:20.0,23.0,18.0
+    // =================================================
+    if (value.startsWith("SETDIST:")) {
+
+        String data = value.substring(8);
+
+        int comma1 = data.indexOf(',');
+        int comma2 = data.indexOf(',', comma1 + 1);
+
+        if (comma1 <= 0 || comma2 <= comma1 + 1) {
+            Serial.println("[SETDIST FAIL] FORMAT");
+            sendBle("ERR:SETDIST_FORMAT");
+            return;
+        }
+
+        float newD12 = data.substring(0, comma1).toFloat();
+        float newD13 = data.substring(comma1 + 1, comma2).toFloat();
+        float newD23 = data.substring(comma2 + 1).toFloat();
+
+        // 먼저 임시값으로 삼각형 성립 여부 확인
+        float oldD12 = D12;
+        float oldD13 = D13;
+        float oldD23 = D23;
+
+        D12 = newD12;
+        D13 = newD13;
+        D23 = newD23;
+
+        if (!calculateAnchorCoordinates()) {
+            D12 = oldD12;
+            D13 = oldD13;
+            D23 = oldD23;
+            calculateAnchorCoordinates();
+
+            Serial.println("[SETDIST FAIL] INVALID TRIANGLE");
+            sendBle("ERR:SETDIST_INVALID");
+            return;
+        }
+
+        // 유효한 값만 ESP32 NVS에 저장
+        preferences.putFloat("d12", D12);
+        preferences.putFloat("d13", D13);
+        preferences.putFloat("d23", D23);
+
+        Serial.println("[SETDIST OK]");
+        Serial.print("D12 = ");
+        Serial.println(D12, 2);
+        Serial.print("D13 = ");
+        Serial.println(D13, 2);
+        Serial.print("D23 = ");
+        Serial.println(D23, 2);
+
+        String reply =
+            "DIST:"
+            + String(D12, 2) + ","
+            + String(D13, 2) + ","
+            + String(D23, 2);
+
+        sendBle(reply);
+        return;
+    }
 
     // =================================================
     // 측정 명령
@@ -880,6 +951,24 @@ void setup() {
     Serial.println(
         "================================"
     );
+
+    // =================================================
+    // 저장된 앵커 거리 불러오기
+    // 최초 실행이면 위 기본값 사용
+    // =================================================
+    preferences.begin("sanjigi", false);
+
+    D12 = preferences.getFloat("d12", D12);
+    D13 = preferences.getFloat("d13", D13);
+    D23 = preferences.getFloat("d23", D23);
+
+    Serial.println("[ANCHOR DISTANCES]");
+    Serial.print("D12 = ");
+    Serial.println(D12, 2);
+    Serial.print("D13 = ");
+    Serial.println(D13, 2);
+    Serial.print("D23 = ");
+    Serial.println(D23, 2);
 
     // =================================================
     // 앵커 좌표 자동 계산
