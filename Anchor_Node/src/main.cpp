@@ -213,10 +213,19 @@ void loop() {
         //
         // 둘이 동시에 마스터로 송신하는 충돌을 줄임
         // =============================================
-        int relayDelay =
-            (ANCHOR_NUM * 80) + 20;
+        int relayDelay;
 
-        delay(relayDelay);
+        if (ANCHOR_NUM == 2) {
+            relayDelay = 100;      // 앵커2 먼저
+        }
+        else if (ANCHOR_NUM == 3) {
+            relayDelay = 500;      // 앵커3 나중
+        }
+        else {
+            relayDelay = 100;
+        }
+
+delay(relayDelay);
 
         // =============================================
         // 마스터로 전송
