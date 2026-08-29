@@ -105,6 +105,48 @@ struct RssiBuffer {
     }
 
     // -------------------------------------------------
+    // RSSI 안정도 기반 가중치
+    // 최근 5개가 안정적일수록 1.0에 가까움
+    // 많이 흔들릴수록 자동으로 가중치 감소
+    // -------------------------------------------------
+    float getWeight() {
+
+        if (count < 5) {
+            return 0.2f;
+        }
+
+        float mean = 0.0f;
+
+        for (int i = 0; i < 5; i++) {
+            mean += data[i];
+        }
+
+        mean /= 5.0f;
+
+        float variance = 0.0f;
+
+        for (int i = 0; i < 5; i++) {
+            float diff = data[i] - mean;
+            variance += diff * diff;
+        }
+
+        variance /= 5.0f;
+
+        // 분산이 0이면 1.0
+        // 흔들림이 커질수록 0에 가까워짐
+        float weight =
+            1.0f /
+            (1.0f + variance / 9.0f);
+
+        // 한 앵커를 완전히 무시하지는 않도록 하한 설정
+        if (weight < 0.10f) {
+            weight = 0.10f;
+        }
+
+        return weight;
+    }
+
+    // -------------------------------------------------
     // 살아있는 노드인지
     // -------------------------------------------------
     bool isAlive() {
@@ -161,6 +203,11 @@ void sendBle(String msg);
 float rssiToDistance(int rssi);
 bool calculateAnchorCoordinates();
 bool trilaterate2D(float d1, float d2, float d3, float &x, float &y);
+bool weightedLeastSquares2D(
+    float d1, float d2, float d3,
+    float w1, float w2, float w3,
+    float &x, float &y
+);
 
 
 // =====================================================
@@ -318,6 +365,195 @@ bool trilaterate2D(
             a11 * b2 -
             b1 * a21
         ) / det;
+
+    return true;
+}
+
+
+// =====================================================
+// 가중 최소제곱 2D 위치 추정
+//
+// 기존 삼변측량 결과를 시작점으로 사용하고,
+// RSSI 거리 3개와 가장 잘 맞는 X/Y를 반복 계산.
+//
+// 안정적인 앵커 = 큰 가중치
+// 흔들리는 앵커 = 작은 가중치
+// =====================================================
+bool weightedLeastSquares2D(
+    float d1,
+    float d2,
+    float d3,
+    float w1,
+    float w2,
+    float w3,
+    float &x,
+    float &y
+) {
+
+    const float ax[3] = {
+        0.0f,
+        D12,
+        anchor3X
+    };
+
+    const float ay[3] = {
+        0.0f,
+        0.0f,
+        anchor3Y
+    };
+
+    const float measured[3] = {
+        d1,
+        d2,
+        d3
+    };
+
+    const float weight[3] = {
+        w1,
+        w2,
+        w3
+    };
+
+    // -------------------------------------------------
+    // 시작점:
+    // 기존 삼변측량 결과를 먼저 사용
+    // 실패하면 앵커 삼각형 중심에서 시작
+    // -------------------------------------------------
+    if (!trilaterate2D(d1, d2, d3, x, y)) {
+
+        x =
+            (
+                ax[0] +
+                ax[1] +
+                ax[2]
+            ) / 3.0f;
+
+        y =
+            (
+                ay[0] +
+                ay[1] +
+                ay[2]
+            ) / 3.0f;
+    }
+
+    // -------------------------------------------------
+    // Gauss-Newton 반복
+    // -------------------------------------------------
+    for (int iter = 0; iter < 12; iter++) {
+
+        float h11 = 0.0f;
+        float h12 = 0.0f;
+        float h22 = 0.0f;
+
+        float g1 = 0.0f;
+        float g2 = 0.0f;
+
+        for (int i = 0; i < 3; i++) {
+
+            float dx = x - ax[i];
+            float dy = y - ay[i];
+
+            float predicted =
+                sqrtf(
+                    dx * dx +
+                    dy * dy
+                );
+
+            if (predicted < 0.001f) {
+                predicted = 0.001f;
+            }
+
+            // 잔차 = 예측거리 - RSSI 측정거리
+            float residual =
+                predicted -
+                measured[i];
+
+            float jx =
+                dx /
+                predicted;
+
+            float jy =
+                dy /
+                predicted;
+
+            float w =
+                weight[i];
+
+            h11 +=
+                w *
+                jx *
+                jx;
+
+            h12 +=
+                w *
+                jx *
+                jy;
+
+            h22 +=
+                w *
+                jy *
+                jy;
+
+            g1 +=
+                w *
+                jx *
+                residual;
+
+            g2 +=
+                w *
+                jy *
+                residual;
+        }
+
+        float det =
+            h11 * h22 -
+            h12 * h12;
+
+        if (fabsf(det) < 0.000001f) {
+            return false;
+        }
+
+        float stepX =
+            -(
+                h22 * g1 -
+                h12 * g2
+            ) / det;
+
+        float stepY =
+            -(
+                -h12 * g1 +
+                h11 * g2
+            ) / det;
+
+        // 너무 큰 한 번의 점프 방지
+        const float MAX_STEP = 5.0f;
+
+        if (stepX > MAX_STEP) stepX = MAX_STEP;
+        if (stepX < -MAX_STEP) stepX = -MAX_STEP;
+
+        if (stepY > MAX_STEP) stepY = MAX_STEP;
+        if (stepY < -MAX_STEP) stepY = -MAX_STEP;
+
+        x += stepX;
+        y += stepY;
+
+        // 충분히 수렴하면 종료
+        if (
+            fabsf(stepX) < 0.001f &&
+            fabsf(stepY) < 0.001f
+        ) {
+            break;
+        }
+    }
+
+    if (
+        isnan(x) ||
+        isnan(y) ||
+        isinf(x) ||
+        isinf(y)
+    ) {
+        return false;
+    }
 
     return true;
 }
@@ -498,14 +734,59 @@ class CommandCallbacks :
             float x = 0.0f;
             float y = 0.0f;
 
+            // =========================================
+            // 앵커별 RSSI 안정도 가중치
+            // =========================================
+            float w1 = targetBuffer.getWeight();
+            float w2 = anchor2Buffer.getWeight();
+            float w3 = anchor3Buffer.getWeight();
+
+            Serial.println("------------------------------");
+            Serial.print("MASTER  WEIGHT : ");
+            Serial.println(w1, 3);
+
+            Serial.print("ANCHOR2 WEIGHT : ");
+            Serial.println(w2, 3);
+
+            Serial.print("ANCHOR3 WEIGHT : ");
+            Serial.println(w3, 3);
+
+            // =========================================
+            // 가중 최소제곱 위치 계산
+            // =========================================
             bool triOK =
-                trilaterate2D(
+                weightedLeastSquares2D(
                     d1,
                     d2,
                     d3,
+                    w1,
+                    w2,
+                    w3,
                     x,
                     y
                 );
+
+            // WLS가 실패하면 기존 삼변측량으로 자동 복귀
+            if (!triOK) {
+
+                Serial.println(
+                    "[WLS FAIL] 기존 삼변측량으로 fallback"
+                );
+
+                triOK =
+                    trilaterate2D(
+                        d1,
+                        d2,
+                        d3,
+                        x,
+                        y
+                    );
+            }
+            else {
+                Serial.println(
+                    "[WLS OK] 가중 최소제곱 적용"
+                );
+            }
 
             if (triOK) {
 
