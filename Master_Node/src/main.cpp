@@ -178,19 +178,86 @@ class CommandCallbacks :
     public BLECharacteristicCallbacks {
 
     void onWrite(
-        BLECharacteristic* pChar
-    ) override {
+    BLECharacteristic* pChar
+) override {
 
-        String value =
-            pChar->getValue().c_str();
+    String value =
+        pChar->getValue().c_str();
 
-        Serial.print(
-            "[BLE CMD] "
-        );
+    value.trim();
 
-        Serial.println(
-            value
-        );
+    Serial.print("[BLE CMD] ");
+    Serial.println(value);
+
+    // =================================================
+    // 측정 명령
+    // =================================================
+    if (value == "MEASURE") {
+
+        Serial.println();
+        Serial.println("==============================");
+        Serial.println("MEASURE SNAPSHOT");
+
+        // 세 노드 모두 살아있는지 확인
+        bool targetOK  = targetBuffer.isAlive();
+        bool anchor2OK = anchor2Buffer.isAlive();
+        bool anchor3OK = anchor3Buffer.isAlive();
+
+        // 중앙값 5개가 모두 준비됐는지 확인
+        bool medianOK =
+            targetBuffer.median  != -999 &&
+            anchor2Buffer.median != -999 &&
+            anchor3Buffer.median != -999;
+
+        if (
+            targetOK &&
+            anchor2OK &&
+            anchor3OK &&
+            medianOK
+        ) {
+
+            int rssi1 = targetBuffer.median;
+            int rssi2 = anchor2Buffer.median;
+            int rssi3 = anchor3Buffer.median;
+
+            Serial.print("MASTER  RSSI : ");
+            Serial.println(rssi1);
+
+            Serial.print("ANCHOR2 RSSI : ");
+            Serial.println(rssi2);
+
+            Serial.print("ANCHOR3 RSSI : ");
+            Serial.println(rssi3);
+
+            Serial.print("ALT          : ");
+            Serial.println(targetAltitude);
+
+            Serial.println("[MEASURE READY]");
+        }
+
+        else {
+
+            Serial.println("[MEASURE FAIL]");
+
+            if (!targetOK) {
+                Serial.println("TARGET NOT ALIVE");
+            }
+
+            if (!anchor2OK) {
+                Serial.println("ANCHOR2 NOT ALIVE");
+            }
+
+            if (!anchor3OK) {
+                Serial.println("ANCHOR3 NOT ALIVE");
+            }
+
+            if (!medianOK) {
+                Serial.println("RSSI MEDIAN NOT READY");
+            }
+        }
+
+        Serial.println("==============================");
+    }
     }
 };
 
