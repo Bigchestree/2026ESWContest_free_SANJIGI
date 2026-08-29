@@ -2,24 +2,22 @@
 #include <RadioLib.h>
 #include <SPI.h>
 
-// ==========================================
-// 앵커 번호만 변경
-// 앵커2 -> 2
-// 앵커3 -> 3
-// ==========================================
-#define ANCHOR_NUM 3
+// =====================================================
+// 이 코드가 앵커2
+// =====================================================
+#define ANCHOR_NUM 2
 
-// ==========================================
-// XIAO ESP32-S3 + Wio-SX1262 B2B 핀
-// ==========================================
-#define LORA_NSS    41
-#define LORA_BUSY   40
-#define LORA_NRST   42
-#define LORA_DIO1   39
+// =====================================================
+// Wio-SX1262 B2B PIN
+// =====================================================
+#define LORA_NSS   41
+#define LORA_BUSY  40
+#define LORA_NRST  42
+#define LORA_DIO1  39
 
-#define LORA_SCK     7
-#define LORA_MISO    8
-#define LORA_MOSI    9
+#define LORA_SCK    7
+#define LORA_MISO   8
+#define LORA_MOSI   9
 
 SPIClass loraSPI(FSPI);
 
@@ -31,19 +29,29 @@ SX1262 radio = new Module(
     loraSPI
 );
 
-bool loraOK = false;
+// =====================================================
+// RX FLAG
+// =====================================================
+volatile bool receivedFlag = false;
 
+void setFlag() {
+    receivedFlag = true;
+}
+
+// =====================================================
+// SETUP
+// =====================================================
 void setup() {
+
     Serial.begin(115200);
-    delay(1000);
+    delay(3000);
 
     Serial.println();
-    Serial.println("=====================================");
-    Serial.printf(" ANCHOR NODE %d\n", ANCHOR_NUM);
-    Serial.println(" XIAO ESP32-S3 + Wio-SX1262 B2B");
-    Serial.println("=====================================");
+    Serial.println("=========================");
+    Serial.println("ANCHOR 2 START");
+    Serial.println("=========================");
 
-    // SPI 시작
+    // SPI
     loraSPI.begin(
         LORA_SCK,
         LORA_MISO,
@@ -51,109 +59,164 @@ void setup() {
         LORA_NSS
     );
 
-    // SX1262 초기화
+    Serial.println("[SPI] OK");
+
+    // LoRa
     int state = radio.begin(
-        923.0,   // 주파수
-        125.0,   // BW
-        9,       // SF
-        7,       // CR
-        0x12,    // Sync Word
-        10,      // TX Power
-        8,       // Current Limit
-        1.8,     // TCXO
-        false    // LDO
+        923.0,
+        125.0,
+        9,
+        7,
+        0x12,
+        10,
+        8,
+        1.8,
+        false
     );
 
-    if (state == RADIOLIB_ERR_NONE) {
-        radio.setDio2AsRfSwitch(true);
+    Serial.print("[LoRa begin] ");
+    Serial.println(state);
 
-        int rxState = radio.startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
 
-        if (rxState == RADIOLIB_ERR_NONE) {
-            loraOK = true;
-
-            Serial.println("[SUCCESS] LoRa Init");
-            Serial.println("[SUCCESS] RX Mode");
-            Serial.println("Waiting for TARGET:PING...");
-        } else {
-            Serial.printf("[FAIL] RX Start: %d\n", rxState);
-        }
-    } else {
-        Serial.printf("[FAIL] LoRa Init: %d\n", state);
-    }
-}
-
-void loop() {
-
-    if (!loraOK) {
-        delay(1000);
+        Serial.println("[FAIL] LoRa Init");
         return;
     }
 
-    String strData;
+    radio.setDio2AsRfSwitch(true);
 
-    int state = radio.readData(strData);
+    // 패킷 수신 인터럽트
+    radio.setPacketReceivedAction(setFlag);
 
-    // ==========================================
-    // 조난자 핑 수신
-    // ==========================================
-    if (state == RADIOLIB_ERR_NONE) {
+    state = radio.startReceive();
 
-        float rssi = radio.getRSSI();
-        float snr  = radio.getSNR();
+    Serial.print("[RX START] ");
+    Serial.println(state);
 
-        Serial.println();
-        Serial.println("========== RX ==========");
-        Serial.print("DATA : ");
-        Serial.println(strData);
+    Serial.println("WAITING FOR TARGET...");
+}
 
-        Serial.print("RSSI : ");
-        Serial.print(rssi);
-        Serial.println(" dBm");
+// =====================================================
+// LOOP
+// =====================================================
+void loop() {
 
-        Serial.print("SNR  : ");
-        Serial.print(snr);
-        Serial.println(" dB");
+    if (!receivedFlag) {
+        return;
+    }
 
-        // 조난자 패킷만 중계
-        if (strData.startsWith("TARGET:PING")) {
+    receivedFlag = false;
 
-            // 고도값 추출
-            String altStr = "0.0";
+    String msg;
 
-            int altIdx = strData.indexOf("ALT:");
+    int state = radio.readData(msg);
 
-            if (altIdx != -1) {
-                altStr = strData.substring(altIdx + 4);
-            }
+    if (state != RADIOLIB_ERR_NONE) {
 
-            // 앵커2/3 송신 충돌 방지
-            // 앵커2 약 180ms
-            // 앵커3 약 260ms
-            delay(ANCHOR_NUM * 80 + 20);
+        Serial.print("[RX ERROR] ");
+        Serial.println(state);
 
-            // 마스터로 보낼 패킷
-            String forwardMsg =
-                "ANCHOR" +
-                String(ANCHOR_NUM) +
-                ":RSSI:" +
-                String((int)rssi) +
-                ",ALT:" +
-                altStr;
+        radio.startReceive();
+        return;
+    }
 
-            Serial.print("[TX RELAY] ");
-            Serial.println(forwardMsg);
+    // =================================================
+    // 받은 패킷 정보
+    // =================================================
+    int targetRssi =
+        (int)radio.getRSSI();
 
-            int txState = radio.transmit(forwardMsg);
+    float targetSnr =
+        radio.getSNR();
 
-            if (txState == RADIOLIB_ERR_NONE) {
-                Serial.println("[TX SUCCESS]");
-            } else {
-                Serial.printf("[TX FAIL] %d\n", txState);
-            }
+    Serial.println();
+    Serial.println("-------------------------");
+
+    Serial.print("RX DATA : ");
+    Serial.println(msg);
+
+    Serial.print("RSSI    : ");
+    Serial.println(targetRssi);
+
+    Serial.print("SNR     : ");
+    Serial.println(targetSnr);
+
+    // =================================================
+    // TARGET 패킷만 처리
+    // =================================================
+    if (msg.startsWith("TARGET:PING")) {
+
+        // ALT 추출
+        String alt = "0.0";
+
+        int altIndex =
+            msg.indexOf("ALT:");
+
+        if (altIndex != -1) {
+
+            alt =
+                msg.substring(
+                    altIndex + 4
+                );
         }
 
-        // 다시 수신 모드
+        // ---------------------------------------------
+        // 마스터로 보낼 패킷 생성
+        // ---------------------------------------------
+        String relayMsg =
+            "ANCHOR2:RSSI:"
+            +
+            String(targetRssi)
+            +
+            ",ALT:"
+            +
+            alt;
+
+        Serial.print("RELAY   : ");
+        Serial.println(relayMsg);
+
+        // ---------------------------------------------
+        // 약간 기다린 뒤 송신
+        // ---------------------------------------------
+        delay(180);
+
+        int txState =
+            radio.transmit(relayMsg);
+
+        if (txState == RADIOLIB_ERR_NONE) {
+
+            Serial.println(
+                "[RELAY SUCCESS]"
+            );
+
+        } else {
+
+            Serial.print(
+                "[RELAY FAIL] "
+            );
+
+            Serial.println(
+                txState
+            );
+        }
+    }
+
+    Serial.println("-------------------------");
+
+    // =================================================
+    // 다시 수신모드
+    // =================================================
+    int rxState =
         radio.startReceive();
+
+    if (rxState != RADIOLIB_ERR_NONE) {
+
+        Serial.print(
+            "[RX RESTART FAIL] "
+        );
+
+        Serial.println(
+            rxState
+        );
     }
 }
