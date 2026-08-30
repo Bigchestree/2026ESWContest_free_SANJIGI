@@ -42,6 +42,10 @@ bool deviceConnected = false;
 // ---------- NVS ----------
 Preferences prefs;
 
+// ---------- RSSI distance model (editable via BLE / saved in NVS) ----------
+float modelA = -40.0f;  // RSSI at 1 m
+float modelN = 2.8f;    // path-loss exponent
+
 // =====================================================
 // RSSI buffer
 // =====================================================
@@ -174,9 +178,7 @@ float relativeHeightMeters(float targetPressure, float anchorPressure) {
 // Current RSSI-distance model.
 // This MUST still be field-calibrated later.
 float rssiToDistance3D(int rssi) {
-  const float A = -40.0f; // RSSI at 1 m
-  const float n = 2.8f;   // path-loss exponent
-  return powf(10.0f, (A - (float)rssi) / (10.0f * n));
+  return powf(10.0f, (modelA - (float)rssi) / (10.0f * modelN));
 }
 
 float rssiWeight(const RssiBuffer& b) {
@@ -244,6 +246,43 @@ void sendBaseStatus() {
                String(validPressure(basePressB) ? basePressB : -1.0f, 2) + "," +
                String(validPressure(basePressC) ? basePressC : -1.0f, 2);
   sendBle(msg);
+}
+
+// =====================================================
+// RSSI model A / n save-load
+// =====================================================
+void loadRssiModel() {
+  modelA = prefs.getFloat("modelA", -40.0f);
+  modelN = prefs.getFloat("modelN", 2.8f);
+
+  // Safety fallback for corrupted/invalid stored values.
+  if (!isfinite(modelA) || modelA > -10.0f || modelA < -120.0f) {
+    modelA = -40.0f;
+  }
+  if (!isfinite(modelN) || modelN < 1.0f || modelN > 8.0f) {
+    modelN = 2.8f;
+  }
+
+  Serial.printf("[RSSI MODEL] A=%.2f n=%.3f\n", modelA, modelN);
+}
+
+void sendRssiModel() {
+  sendBle("MODEL:" + String(modelA, 2) + "," + String(modelN, 3));
+}
+
+bool setRssiModel(float newA, float newN) {
+  // Practical validation ranges.
+  if (!isfinite(newA) || newA > -10.0f || newA < -120.0f) return false;
+  if (!isfinite(newN) || newN < 1.0f || newN > 8.0f) return false;
+
+  modelA = newA;
+  modelN = newN;
+
+  prefs.putFloat("modelA", modelA);
+  prefs.putFloat("modelN", modelN);
+
+  sendRssiModel();
+  return true;
 }
 
 // =====================================================
@@ -478,6 +517,29 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
       return;
     }
 
+    if (cmd == "GETMODEL") {
+      sendRssiModel();
+      return;
+    }
+
+    if (cmd.startsWith("SETMODEL:")) {
+      String values = cmd.substring(9);
+      int comma = values.indexOf(',');
+
+      if (comma < 0) {
+        sendBle("ERR:MODEL_FORMAT");
+        return;
+      }
+
+      float newA = values.substring(0, comma).toFloat();
+      float newN = values.substring(comma + 1).toFloat();
+
+      if (!setRssiModel(newA, newN)) {
+        sendBle("ERR:MODEL_RANGE");
+      }
+      return;
+    }
+
     sendBle("ERR:CMD");
   }
 };
@@ -570,6 +632,7 @@ void setup() {
   Serial.println("\n=== SANJIGI MASTER / PRESS + WLS ===");
 
   loadBases();
+  loadRssiModel();
   initLoRa();
   initBLE();
 }
