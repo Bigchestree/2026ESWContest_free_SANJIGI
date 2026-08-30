@@ -7,7 +7,7 @@
 // Anchor 2 upload: #define ANCHOR_NUM 2
 // Anchor 3 upload: #define ANCHOR_NUM 3
 // =====================================================
-#define ANCHOR_NUM 2
+#define ANCHOR_NUM 3
 
 #if (ANCHOR_NUM != 2) && (ANCHOR_NUM != 3)
 #error "ANCHOR_NUM must be 2 or 3"

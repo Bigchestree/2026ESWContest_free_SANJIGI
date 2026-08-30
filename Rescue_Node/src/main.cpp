@@ -116,7 +116,7 @@ void loop() {
   int state = radio.transmit(payload);
 
   if (state == RADIOLIB_ERR_NONE) {
-    Serial.printf("[TX] %s | TEMP:%.2fC\n", payload.c_str(), temp);
+    Serial.printf("[TX] %s, TEMP:%.2fC\n", payload.c_str(), temp);
   } else {
     Serial.printf("[TX FAIL] code=%d\n", state);
   }

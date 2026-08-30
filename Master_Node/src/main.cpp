@@ -643,9 +643,19 @@ void loop() {
 
   if (state == RADIOLIB_ERR_NONE) {
     int directRssi = (int)radio.getRSSI();
+
+    Serial.printf("[LORA RX] %s | RSSI:%d dBm\n",
+                  msg.c_str(), directRssi);
+
     parseIncomingPacket(msg, directRssi);
+
+    radio.startReceive();
+  }
+  else if (state != RADIOLIB_ERR_RX_TIMEOUT) {
+    Serial.printf("[LORA RX ERROR] code=%d\n", state);
     radio.startReceive();
   }
 
   sendStatus();
-}
+  }
+
