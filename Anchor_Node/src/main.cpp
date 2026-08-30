@@ -3,284 +3,117 @@
 #include <SPI.h>
 
 // =====================================================
-// 앵커 번호만 변경
-// 앵커2 = 2
-// 앵커3 = 3
+// SANJIGI ANCHOR NODE - COMMON CODE
+// Anchor 2 upload: #define ANCHOR_NUM 2
+// Anchor 3 upload: #define ANCHOR_NUM 3
 // =====================================================
-#define ANCHOR_NUM 3
+#define ANCHOR_NUM 2
 
-// =====================================================
-// Wio-SX1262 B2B PIN
-// =====================================================
+#if (ANCHOR_NUM != 2) && (ANCHOR_NUM != 3)
+#error "ANCHOR_NUM must be 2 or 3"
+#endif
+
+// ---------- Wio-SX1262 B2B pins ----------
 #define LORA_NSS   41
 #define LORA_BUSY  40
 #define LORA_NRST  42
 #define LORA_DIO1  39
-
-#define LORA_SCK    7
-#define LORA_MISO   8
-#define LORA_MOSI   9
+#define LORA_SCK   7
+#define LORA_MISO  8
+#define LORA_MOSI  9
 
 SPIClass loraSPI(FSPI);
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY, loraSPI);
 
-SX1262 radio = new Module(
-    LORA_NSS,
-    LORA_DIO1,
-    LORA_NRST,
-    LORA_BUSY,
-    loraSPI
-);
+bool loraOK = false;
 
-// =====================================================
-// RX FLAG
-// =====================================================
-volatile bool receivedFlag = false;
+bool extractPressure(const String& msg, float& pressure) {
+  int idx = msg.indexOf("PRESS:");
+  if (idx < 0) return false;
 
-void setFlag() {
-    receivedFlag = true;
+  String s = msg.substring(idx + 6);
+  int comma = s.indexOf(',');
+  if (comma >= 0) s = s.substring(0, comma);
+
+  pressure = s.toFloat();
+  return isfinite(pressure) && pressure >= 300.0f && pressure <= 1100.0f;
 }
 
-// =====================================================
-// SETUP
-// =====================================================
-void setup() {
+void initLoRa() {
+  pinMode(LORA_NRST, OUTPUT);
+  digitalWrite(LORA_NRST, LOW);
+  delay(20);
+  digitalWrite(LORA_NRST, HIGH);
+  delay(100);
 
-    Serial.begin(115200);
-    delay(3000);
+  loraSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
-    Serial.println();
-    Serial.println("=========================");
+  int state = radio.begin(
+    923.0, 125.0, 9, 7, 0x12,
+    10, 8, 1.6, true
+  );
 
-    Serial.print("ANCHOR ");
-    Serial.print(ANCHOR_NUM);
-    Serial.println(" START");
-
-    Serial.println("=========================");
-
-    // =================================================
-    // SPI
-    // =================================================
-    loraSPI.begin(
-        LORA_SCK,
-        LORA_MISO,
-        LORA_MOSI,
-        LORA_NSS
-    );
-
-    Serial.println("[SPI] OK");
-
-    // =================================================
-    // LoRa
-    // =================================================
-    int state = radio.begin(
-        923.0,
-        125.0,
-        9,
-        7,
-        0x12,
-        10,
-        8,
-        1.8,
-        false
-    );
-
-    Serial.print("[LoRa begin] ");
-    Serial.println(state);
-
-    if (state != RADIOLIB_ERR_NONE) {
-
-        Serial.println("[FAIL] LoRa Init");
-
-        return;
-    }
-
-    // RF Switch
+  if (state == RADIOLIB_ERR_NONE) {
     radio.setDio2AsRfSwitch(true);
-
-    // 패킷 수신 인터럽트
-    radio.setPacketReceivedAction(setFlag);
-
-    // 수신 시작
-    state = radio.startReceive();
-
-    Serial.print("[RX START] ");
-    Serial.println(state);
-
-    Serial.println("WAITING FOR TARGET...");
+    radio.startReceive();
+    loraOK = true;
+    Serial.printf("[LORA] Anchor %d OK\n", ANCHOR_NUM);
+  } else {
+    Serial.printf("[LORA] FAIL code=%d\n", state);
+  }
 }
 
-// =====================================================
-// LOOP
-// =====================================================
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+
+  Serial.printf("\n=== SANJIGI ANCHOR %d / PRESS MODE ===\n", ANCHOR_NUM);
+  initLoRa();
+}
+
 void loop() {
+  if (!loraOK) {
+    delay(1000);
+    return;
+  }
 
-    if (!receivedFlag) {
-        return;
-    }
+  String msg;
+  int state = radio.readData(msg);
 
-    receivedFlag = false;
+  if (state != RADIOLIB_ERR_NONE) {
+    return;
+  }
 
-    String msg;
+  int targetRssi = (int)radio.getRSSI();
 
-    int state =
-        radio.readData(msg);
+  if (!msg.startsWith("TARGET:PING")) {
+    radio.startReceive();
+    return;
+  }
 
-    // =================================================
-    // RX 오류
-    // =================================================
-    if (state != RADIOLIB_ERR_NONE) {
+  float pressure = NAN;
+  bool pressOK = extractPressure(msg, pressure);
 
-        Serial.print("[RX ERROR] ");
-        Serial.println(state);
+  // Leave enough separation between Anchor 2 and Anchor 3 relays.
+  // A2: 250 ms, A3: 620 ms.
+  delay(ANCHOR_NUM == 2 ? 250 : 620);
 
-        radio.startReceive();
+  String forwardMsg =
+      "ANCHOR" + String(ANCHOR_NUM) +
+      ":RSSI:" + String(targetRssi);
 
-        return;
-    }
+  // PRESS missing/invalid -> still relay RSSI only.
+  if (pressOK) {
+    forwardMsg += ",PRESS:" + String(pressure, 2);
+  }
 
-    // =================================================
-    // 조난자로부터 받은 RSSI / SNR
-    // =================================================
-    int targetRssi =
-        (int)radio.getRSSI();
+  int txState = radio.transmit(forwardMsg);
 
-    float targetSnr =
-        radio.getSNR();
+  if (txState == RADIOLIB_ERR_NONE) {
+    Serial.printf("[RELAY TX] %s\n", forwardMsg.c_str());
+  } else {
+    Serial.printf("[RELAY FAIL] code=%d\n", txState);
+  }
 
-    Serial.println();
-    Serial.println("-------------------------");
-
-    Serial.print("RX DATA : ");
-    Serial.println(msg);
-
-    Serial.print("RSSI    : ");
-    Serial.println(targetRssi);
-
-    Serial.print("SNR     : ");
-    Serial.println(targetSnr);
-
-    // =================================================
-    // TARGET 패킷만 중계
-    // =================================================
-    if (msg.startsWith("TARGET:PING")) {
-
-        // =============================================
-        // ALT 값 추출
-        // =============================================
-        String alt = "0.0";
-
-        int altIndex =
-            msg.indexOf("ALT:");
-
-        if (altIndex != -1) {
-
-            alt =
-                msg.substring(
-                    altIndex + 4
-                );
-        }
-
-        // =============================================
-        // 앵커 번호 자동 적용
-        //
-        // ANCHOR_NUM = 2
-        // ANCHOR2:RSSI:-50,ALT:100.0
-        //
-        // ANCHOR_NUM = 3
-        // ANCHOR3:RSSI:-50,ALT:100.0
-        // =============================================
-        String relayMsg =
-            "ANCHOR"
-            +
-            String(ANCHOR_NUM)
-            +
-            ":RSSI:"
-            +
-            String(targetRssi)
-            +
-            ",ALT:"
-            +
-            alt;
-
-        Serial.print("RELAY   : ");
-        Serial.println(relayMsg);
-
-        // =============================================
-        // 앵커별 송신 시간 분리
-        //
-        // 앵커2 ≈ 180ms
-        // 앵커3 ≈ 700ms
-        //
-        // 둘이 동시에 마스터로 송신하는 충돌을 줄임
-        // =============================================
-        int relayDelay;
-
-        if (ANCHOR_NUM == 2) {
-            relayDelay = 100;      // 앵커2 먼저
-        }
-        else if (ANCHOR_NUM == 3) {
-            relayDelay = 700;      // 앵커3 나중
-        }
-        else {
-            relayDelay = 100;
-        }
-
-delay(relayDelay);
-
-        // =============================================
-        // 마스터로 전송
-        // =============================================
-        int txState =
-            radio.transmit(relayMsg);
-
-        if (
-            txState ==
-            RADIOLIB_ERR_NONE
-        ) {
-
-            Serial.print(
-                "[ANCHOR"
-            );
-
-            Serial.print(
-                ANCHOR_NUM
-            );
-
-            Serial.println(
-                " RELAY SUCCESS]"
-            );
-
-        } else {
-
-            Serial.print(
-                "[RELAY FAIL] "
-            );
-
-            Serial.println(
-                txState
-            );
-        }
-    }
-
-    Serial.println("-------------------------");
-
-    // =================================================
-    // 다시 TARGET 수신 모드
-    // =================================================
-    int rxState =
-        radio.startReceive();
-
-    if (
-        rxState !=
-        RADIOLIB_ERR_NONE
-    ) {
-
-        Serial.print(
-            "[RX RESTART FAIL] "
-        );
-
-        Serial.println(
-            rxState
-        );
-    }
+  radio.startReceive();
 }
