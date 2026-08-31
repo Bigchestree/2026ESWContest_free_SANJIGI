@@ -1,44 +1,38 @@
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <SPI.h>
+#include <Preferences.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include <Preferences.h>
 #include <algorithm>
 #include <math.h>
 
 // =====================================================
 // SANJIGI MASTER NODE
-// PRESS relative-height correction + RSSI median + WLS
-// DIO1 interrupt receive mode
+// HTML BLE protocol exact match
 // =====================================================
 
-// ---------- Wio-SX1262 B2B pins ----------
+// ---------- Wio-SX1262 B2B ----------
 #define LORA_NSS   41
 #define LORA_BUSY  40
 #define LORA_NRST  42
 #define LORA_DIO1  39
-#define LORA_SCK   7
-#define LORA_MISO  8
-#define LORA_MOSI  9
+#define LORA_SCK    7
+#define LORA_MISO   8
+#define LORA_MOSI   9
 
 SPIClass loraSPI(FSPI);
-SX1262 radio = new Module(
-  LORA_NSS,
-  LORA_DIO1,
-  LORA_NRST,
-  LORA_BUSY,
-  loraSPI
-);
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY, loraSPI);
+bool loraOK = false;
 
-// ---------- Anchor XY coordinates (meters) ----------
+// ---------- Anchor XY ----------
 const float AX = 0.0f,  AY = 0.0f;
 const float BX = 80.0f, BY = 0.0f;
 const float CX = 40.0f, CY = 69.0f;
 
-// ---------- BLE ----------
+// ---------- BLE UUID: exact match with dashboard ----------
 #define SERVICE_UUID   "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_CMD_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHAR_DATA_UUID "a3c17822-1d5b-4176-a447-0624916a0487"
@@ -46,21 +40,10 @@ const float CX = 40.0f, CY = 69.0f;
 BLECharacteristic* pDataChar = nullptr;
 bool deviceConnected = false;
 
-// ---------- NVS ----------
 Preferences prefs;
 
-// ---------- RSSI distance model ----------
 float modelA = -40.0f;
 float modelN = 2.8f;
-
-// =====================================================
-// DIO1 interrupt flag
-// =====================================================
-volatile bool receivedFlag = false;
-
-void setFlag(void) {
-  receivedFlag = true;
-}
 
 // =====================================================
 // RSSI buffer
@@ -69,1262 +52,603 @@ struct RssiBuffer {
   int buf[5] = {0};
   int head = 0;
   int count = 0;
-  unsigned long lastRxTime = 0;
+  unsigned long lastRx = 0;
 
   void add(int rssi) {
     if (rssi > -10 || rssi < -140) return;
-
     buf[head] = rssi;
     head = (head + 1) % 5;
-
-    if (count < 5) {
-      count++;
-    }
-
-    lastRxTime = millis();
+    if (count < 5) count++;
+    lastRx = millis();
   }
 
-  bool ready() const {
-    return count >= 5;
-  }
-
-  bool alive() const {
-    return count > 0 &&
-           (millis() - lastRxTime) < 5000;
-  }
+  bool ready() const { return count >= 5; }
+  bool alive() const { return count > 0 && (millis() - lastRx < 5000); }
 
   int median() const {
-    if (!ready()) {
-      return -999;
-    }
-
-    int temp[5];
-
-    for (int i = 0; i < 5; i++) {
-      temp[i] = buf[i];
-    }
-
-    std::sort(temp, temp + 5);
-
-    return temp[2];
+    if (!ready()) return -999;
+    int t[5];
+    for (int i = 0; i < 5; i++) t[i] = buf[i];
+    std::sort(t, t + 5);
+    return t[2];
   }
 
   float sigma() const {
-    if (count < 2) {
-      return 20.0f;
-    }
-
-    float mean = 0;
-
-    for (int i = 0; i < count; i++) {
-      mean += buf[i];
-    }
-
+    if (count < 2) return 20.0f;
+    float mean = 0.0f;
+    for (int i = 0; i < count; i++) mean += buf[i];
     mean /= count;
 
-    float sum = 0;
-
+    float sum = 0.0f;
     for (int i = 0; i < count; i++) {
       float d = buf[i] - mean;
       sum += d * d;
     }
-
     return sqrtf(sum / (count - 1));
   }
 };
 
-RssiBuffer rssiA;
-RssiBuffer rssiB;
-RssiBuffer rssiC;
+RssiBuffer rssiA, rssiB, rssiC;
 
 // =====================================================
-// Pressure rolling buffer
+// Pressure buffer
 // =====================================================
 struct PressureBuffer {
-
   float buf[10] = {0};
-
   int head = 0;
   int count = 0;
-
-  unsigned long lastRxTime = 0;
+  unsigned long lastRx = 0;
 
   void add(float p) {
-
-    if (!isfinite(p) ||
-        p < 300.0f ||
-        p > 1100.0f) {
-      return;
-    }
-
+    if (!isfinite(p) || p < 300.0f || p > 1100.0f) return;
     buf[head] = p;
-
     head = (head + 1) % 10;
-
-    if (count < 10) {
-      count++;
-    }
-
-    lastRxTime = millis();
+    if (count < 10) count++;
+    lastRx = millis();
   }
 
   bool fresh() const {
-
-    return count > 0 &&
-           (millis() - lastRxTime) < 5000;
+    return count > 0 && (millis() - lastRx < 5000);
   }
 
   float median() const {
-
-    if (count == 0) {
-      return NAN;
-    }
-
-    float temp[10];
-
-    for (int i = 0; i < count; i++) {
-      temp[i] = buf[i];
-    }
-
-    std::sort(temp, temp + count);
-
-    if (count % 2 == 1) {
-      return temp[count / 2];
-    }
-
-    return (
-      temp[count / 2 - 1] +
-      temp[count / 2]
-    ) * 0.5f;
+    if (count == 0) return NAN;
+    float t[10];
+    for (int i = 0; i < count; i++) t[i] = buf[i];
+    std::sort(t, t + count);
+    if (count % 2 == 1) return t[count / 2];
+    return (t[count / 2 - 1] + t[count / 2]) * 0.5f;
   }
 };
 
 PressureBuffer pressureBuf;
-
-// =====================================================
-// Saved anchor reference pressures
-// =====================================================
 float basePressA = NAN;
 float basePressB = NAN;
 float basePressC = NAN;
 
 // =====================================================
+// BLE send
+// =====================================================
+void sendBle(const String& msg) {
+  Serial.printf("[BLE TX] %s\n", msg.c_str());
+
+  if (deviceConnected && pDataChar) {
+    pDataChar->setValue(msg.c_str());
+    pDataChar->notify();
+    delay(15);
+  }
+}
+
+// =====================================================
 // Helpers
 // =====================================================
 bool validPressure(float p) {
-
-  return isfinite(p) &&
-         p >= 300.0f &&
-         p <= 1100.0f;
+  return isfinite(p) && p >= 300.0f && p <= 1100.0f;
 }
 
 bool allBasesReady() {
-
   return validPressure(basePressA) &&
          validPressure(basePressB) &&
          validPressure(basePressC);
 }
 
 float parsePressure(const String& msg) {
-
   int idx = msg.indexOf("PRESS:");
+  if (idx < 0) return NAN;
 
-  if (idx < 0) {
-    return NAN;
-  }
-
-  String s = msg.substring(idx + 6);
-
-  int comma = s.indexOf(',');
-
-  if (comma >= 0) {
-    s = s.substring(0, comma);
-  }
+  int start = idx + 6;
+  int end = msg.indexOf(',', start);
+  String s = (end >= 0) ? msg.substring(start, end) : msg.substring(start);
 
   float p = s.toFloat();
-
-  return validPressure(p)
-           ? p
-           : NAN;
+  return validPressure(p) ? p : NAN;
 }
 
-// =====================================================
-// Relative pressure height
-// =====================================================
-float relativeHeightMeters(
-  float targetPressure,
-  float anchorPressure
-) {
+int parseRelayRssi(const String& msg) {
+  int idx = msg.indexOf("RSSI:");
+  if (idx < 0) return -999;
 
-  if (!validPressure(targetPressure) ||
-      !validPressure(anchorPressure)) {
-    return NAN;
-  }
+  int start = idx + 5;
+  int end = msg.indexOf(',', start);
+  String s = (end >= 0) ? msg.substring(start, end) : msg.substring(start);
 
+  int rssi = s.toInt();
+  if (rssi > -10 || rssi < -140) return -999;
+  return rssi;
+}
+
+float relativeHeight(float targetP, float baseP) {
+  if (!validPressure(targetP) || !validPressure(baseP)) return NAN;
   return 44330.0f *
-         (
-           1.0f -
-           powf(
-             targetPressure / anchorPressure,
-             0.19029495f
-           )
-         );
+         (1.0f - powf(targetP / baseP, 0.19029495f));
 }
 
-// =====================================================
-// RSSI distance
-// =====================================================
-float rssiToDistance3D(int rssi) {
-
-  return powf(
-    10.0f,
-    (
-      modelA -
-      (float)rssi
-    ) /
-    (
-      10.0f *
-      modelN
-    )
-  );
+float rssiToDistance(int rssi) {
+  return powf(10.0f,
+              (modelA - (float)rssi) /
+              (10.0f * modelN));
 }
 
 float rssiWeight(const RssiBuffer& b) {
-
   float s = b.sigma();
-
-  float w =
-    1.0f /
-    (
-      s * s +
-      4.0f
-    );
-
-  if (w < 0.01f) {
-    w = 0.01f;
-  }
-
-  if (w > 0.25f) {
-    w = 0.25f;
-  }
-
+  float w = 1.0f / (s * s + 4.0f);
+  if (w < 0.01f) w = 0.01f;
+  if (w > 0.25f) w = 0.25f;
   return w;
 }
 
 // =====================================================
-// BLE send
+// NVS load / save
 // =====================================================
-void sendBle(const String& msg) {
+void loadSettings() {
+  prefs.begin("sanjigi", false);
 
-  Serial.printf(
-    "[BLE TX] %s\n",
-    msg.c_str()
-  );
+  basePressA = prefs.getFloat("pressA", NAN);
+  basePressB = prefs.getFloat("pressB", NAN);
+  basePressC = prefs.getFloat("pressC", NAN);
 
-  if (deviceConnected &&
-      pDataChar) {
+  modelA = prefs.getFloat("modelA", -40.0f);
+  modelN = prefs.getFloat("modelN", 2.8f);
 
-    pDataChar->setValue(
-      msg.c_str()
-    );
-
-    pDataChar->notify();
-  }
+  if (!isfinite(modelA) || modelA < -100 || modelA > -10) modelA = -40.0f;
+  if (!isfinite(modelN) || modelN < 1 || modelN > 6) modelN = 2.8f;
 }
 
-// =====================================================
-// Base pressure save / load
-// =====================================================
-void loadBases() {
-
-  prefs.begin(
-    "sanjigi",
-    false
-  );
-
-  basePressA =
-    prefs.getFloat(
-      "pressA",
-      NAN
-    );
-
-  basePressB =
-    prefs.getFloat(
-      "pressB",
-      NAN
-    );
-
-  basePressC =
-    prefs.getFloat(
-      "pressC",
-      NAN
-    );
-
-  Serial.printf(
-    "[BASE] A=%.2f B=%.2f C=%.2f hPa\n",
-    basePressA,
-    basePressB,
-    basePressC
+void sendBase() {
+  sendBle(
+    "BASE:" +
+    String(validPressure(basePressA) ? basePressA : -1.0f, 2) + "," +
+    String(validPressure(basePressB) ? basePressB : -1.0f, 2) + "," +
+    String(validPressure(basePressC) ? basePressC : -1.0f, 2)
   );
 }
 
-void saveBase(
-  char which,
-  float p
-) {
-
+void saveBase(char which, float p) {
   if (!validPressure(p)) {
+    sendBle("ERR:PRESS_INVALID");
     return;
   }
 
   if (which == 'A') {
-
     basePressA = p;
-
-    prefs.putFloat(
-      "pressA",
-      p
-    );
-
+    prefs.putFloat("pressA", p);
   } else if (which == 'B') {
-
     basePressB = p;
-
-    prefs.putFloat(
-      "pressB",
-      p
-    );
-
+    prefs.putFloat("pressB", p);
   } else if (which == 'C') {
-
     basePressC = p;
-
-    prefs.putFloat(
-      "pressC",
-      p
-    );
+    prefs.putFloat("pressC", p);
   }
 
-  sendBle(
-    "CALOK:" +
-    String(which) +
-    "," +
-    String(p, 2)
-  );
+  sendBle("CALOK:" + String(which) + "," + String(p, 2));
 }
 
-void clearBases() {
-
-  basePressA =
-  basePressB =
-  basePressC =
-  NAN;
-
-  prefs.remove("pressA");
-  prefs.remove("pressB");
-  prefs.remove("pressC");
-
-  sendBle("CALCLR");
+void sendModel() {
+  sendBle("MODEL:" + String(modelA, 2) + "," + String(modelN, 3));
 }
 
-void sendBaseStatus() {
+void setModel(float a, float n) {
+  if (!isfinite(a) || a < -100 || a > -10 ||
+      !isfinite(n) || n < 1 || n > 6) {
+    sendBle("ERR:MODEL_RANGE");
+    return;
+  }
 
-  String msg =
-    "BASE:" +
-    String(
-      validPressure(basePressA)
-      ? basePressA
-      : -1.0f,
-      2
-    ) +
-    "," +
-    String(
-      validPressure(basePressB)
-      ? basePressB
-      : -1.0f,
-      2
-    ) +
-    "," +
-    String(
-      validPressure(basePressC)
-      ? basePressC
-      : -1.0f,
-      2
-    );
+  modelA = a;
+  modelN = n;
 
-  sendBle(msg);
+  prefs.putFloat("modelA", modelA);
+  prefs.putFloat("modelN", modelN);
+
+  // Dashboard handles MODELOK:
+  sendBle("MODELOK:" + String(modelA, 2) + "," + String(modelN, 3));
 }
 
 // =====================================================
-// RSSI model save/load
+// LoRa packet parser
 // =====================================================
-void loadRssiModel() {
+void parsePacket(const String& msg, int directRssi) {
+  Serial.printf("[LORA RX] %s | directRSSI=%d\n",
+                msg.c_str(), directRssi);
 
-  modelA =
-    prefs.getFloat(
-      "modelA",
-      -40.0f
-    );
+  if (msg.startsWith("TARGET:PING")) {
+    rssiA.add(directRssi);
 
-  modelN =
-    prefs.getFloat(
-      "modelN",
-      2.8f
-    );
-
-  if (!isfinite(modelA) ||
-      modelA > -10.0f ||
-      modelA < -120.0f) {
-
-    modelA = -40.0f;
+    float p = parsePressure(msg);
+    if (validPressure(p)) pressureBuf.add(p);
+    return;
   }
 
-  if (!isfinite(modelN) ||
-      modelN < 1.0f ||
-      modelN > 8.0f) {
+  if (msg.startsWith("ANCHOR2:")) {
+    int rssi = parseRelayRssi(msg);
+    if (rssi != -999) rssiB.add(rssi);
 
-    modelN = 2.8f;
+    float p = parsePressure(msg);
+    if (validPressure(p)) pressureBuf.add(p);
+    return;
   }
 
-  Serial.printf(
-    "[RSSI MODEL] A=%.2f n=%.3f\n",
-    modelA,
-    modelN
-  );
+  if (msg.startsWith("ANCHOR3:")) {
+    int rssi = parseRelayRssi(msg);
+    if (rssi != -999) rssiC.add(rssi);
+
+    float p = parsePressure(msg);
+    if (validPressure(p)) pressureBuf.add(p);
+    return;
+  }
 }
 
-void sendRssiModel() {
+// =====================================================
+// Weighted least squares
+// =====================================================
+bool solveWLS(const float d[3],
+              const float w[3],
+              float& x,
+              float& y) {
 
-  sendBle(
-    "MODEL:" +
-    String(modelA, 2) +
-    "," +
-    String(modelN, 3)
-  );
-}
+  const float px[3] = {AX, BX, CX};
+  const float py[3] = {AY, BY, CY};
 
-bool setRssiModel(
-  float newA,
-  float newN
-) {
+  x = (AX + BX + CX) / 3.0f;
+  y = (AY + BY + CY) / 3.0f;
 
-  if (!isfinite(newA) ||
-      newA > -10.0f ||
-      newA < -120.0f) {
-    return false;
+  for (int iter = 0; iter < 20; iter++) {
+
+    float h00 = 0, h01 = 0, h11 = 0;
+    float g0 = 0, g1 = 0;
+
+    for (int i = 0; i < 3; i++) {
+
+      float dx = x - px[i];
+      float dy = y - py[i];
+
+      float pred = sqrtf(dx * dx + dy * dy);
+      if (pred < 0.01f) pred = 0.01f;
+
+      float residual = pred - d[i];
+
+      float jx = dx / pred;
+      float jy = dy / pred;
+
+      h00 += w[i] * jx * jx;
+      h01 += w[i] * jx * jy;
+      h11 += w[i] * jy * jy;
+
+      g0 += w[i] * jx * residual;
+      g1 += w[i] * jy * residual;
+    }
+
+    float det = h00 * h11 - h01 * h01;
+
+    if (fabsf(det) < 1e-8f) {
+      return false;
+    }
+
+    float stepX = -( h11 * g0 - h01 * g1) / det;
+    float stepY = -(-h01 * g0 + h00 * g1) / det;
+
+    float step = sqrtf(stepX * stepX + stepY * stepY);
+
+    if (step > 30.0f) {
+      float k = 30.0f / step;
+      stepX *= k;
+      stepY *= k;
+    }
+
+    x += stepX;
+    y += stepY;
+
+    if (!isfinite(x) || !isfinite(y)) {
+      return false;
+    }
+
+    if (sqrtf(stepX * stepX + stepY * stepY) < 0.01f) {
+      break;
+    }
   }
-
-  if (!isfinite(newN) ||
-      newN < 1.0f ||
-      newN > 8.0f) {
-    return false;
-  }
-
-  modelA = newA;
-  modelN = newN;
-
-  prefs.putFloat(
-    "modelA",
-    modelA
-  );
-
-  prefs.putFloat(
-    "modelN",
-    modelN
-  );
-
-  sendRssiModel();
 
   return true;
 }
 
 // =====================================================
-// Packet parser
-// =====================================================
-void parseIncomingPacket(
-  const String& msg,
-  int directRssi
-) {
-
-  // ---------- Target direct ----------
-  if (msg.startsWith(
-        "TARGET:PING"
-      )) {
-
-    rssiA.add(
-      directRssi
-    );
-
-    float p =
-      parsePressure(msg);
-
-    if (validPressure(p)) {
-
-      pressureBuf.add(p);
-    }
-
-    return;
-  }
-
-  // ---------- Anchor 2 ----------
-  if (msg.startsWith(
-        "ANCHOR2:"
-      )) {
-
-    int idx =
-      msg.indexOf(
-        "RSSI:"
-      );
-
-    if (idx >= 0) {
-
-      int end =
-        msg.indexOf(
-          ',',
-          idx
-        );
-
-      String rs =
-        (end >= 0)
-        ? msg.substring(
-            idx + 5,
-            end
-          )
-        : msg.substring(
-            idx + 5
-          );
-
-      rssiB.add(
-        rs.toInt()
-      );
-    }
-
-    float p =
-      parsePressure(msg);
-
-    if (validPressure(p)) {
-
-      pressureBuf.add(p);
-    }
-
-    return;
-  }
-
-  // ---------- Anchor 3 ----------
-  if (msg.startsWith(
-        "ANCHOR3:"
-      )) {
-
-    int idx =
-      msg.indexOf(
-        "RSSI:"
-      );
-
-    if (idx >= 0) {
-
-      int end =
-        msg.indexOf(
-          ',',
-          idx
-        );
-
-      String rs =
-        (end >= 0)
-        ? msg.substring(
-            idx + 5,
-            end
-          )
-        : msg.substring(
-            idx + 5
-          );
-
-      rssiC.add(
-        rs.toInt()
-      );
-    }
-
-    float p =
-      parsePressure(msg);
-
-    if (validPressure(p)) {
-
-      pressureBuf.add(p);
-    }
-
-    return;
-  }
-}
-
-// =====================================================
-// Weighted nonlinear least squares
-// =====================================================
-bool solveWLS(
-  const float d[3],
-  const float w[3],
-  float& x,
-  float& y
-) {
-
-  const float px[3] = {
-    AX,
-    BX,
-    CX
-  };
-
-  const float py[3] = {
-    AY,
-    BY,
-    CY
-  };
-
-  x =
-    (
-      AX +
-      BX +
-      CX
-    ) /
-    3.0f;
-
-  y =
-    (
-      AY +
-      BY +
-      CY
-    ) /
-    3.0f;
-
-  for (
-    int iter = 0;
-    iter < 12;
-    iter++
-  ) {
-
-    float h00 = 0;
-    float h01 = 0;
-    float h11 = 0;
-
-    float g0 = 0;
-    float g1 = 0;
-
-    for (
-      int i = 0;
-      i < 3;
-      i++
-    ) {
-
-      float dx =
-        x -
-        px[i];
-
-      float dy =
-        y -
-        py[i];
-
-      float ri =
-        sqrtf(
-          dx * dx +
-          dy * dy
-        );
-
-      if (ri < 0.05f) {
-        ri = 0.05f;
-      }
-
-      float residual =
-        ri -
-        d[i];
-
-      float jx =
-        dx /
-        ri;
-
-      float jy =
-        dy /
-        ri;
-
-      h00 +=
-        w[i] *
-        jx *
-        jx;
-
-      h01 +=
-        w[i] *
-        jx *
-        jy;
-
-      h11 +=
-        w[i] *
-        jy *
-        jy;
-
-      g0 +=
-        w[i] *
-        jx *
-        residual;
-
-      g1 +=
-        w[i] *
-        jy *
-        residual;
-    }
-
-    float det =
-      h00 *
-      h11 -
-      h01 *
-      h01;
-
-    if (
-      fabsf(det) <
-      1e-6f
-    ) {
-      return false;
-    }
-
-    float stepX =
-      -(
-        h11 * g0 -
-        h01 * g1
-      ) /
-      det;
-
-    float stepY =
-      -(
-        -h01 * g0 +
-        h00 * g1
-      ) /
-      det;
-
-    x += stepX;
-    y += stepY;
-
-    if (
-      sqrtf(
-        stepX * stepX +
-        stepY * stepY
-      ) <
-      0.01f
-    ) {
-      break;
-    }
-  }
-
-  return
-    isfinite(x) &&
-    isfinite(y);
-}
-
-// =====================================================
-// Snapshot
+// MEASURE
+//
+// Exact Dashboard output:
+// RES:X,Y,Z,d1,d2,d3,zMode
 // =====================================================
 void runSnapshot() {
 
-  if (
-    !rssiA.ready() ||
-    !rssiB.ready() ||
-    !rssiC.ready()
-  ) {
+  Serial.println("\n========== MEASURE ==========");
 
+  if (!rssiA.ready() || !rssiB.ready() || !rssiC.ready()) {
     sendBle(
-      "ERR:RSSI_SAMPLE,A:" +
-      String(rssiA.count) +
-      ",B:" +
-      String(rssiB.count) +
-      ",C:" +
-      String(rssiC.count)
+      "ERR:SAMPLE," +
+      String(rssiA.count) + "/5," +
+      String(rssiB.count) + "/5," +
+      String(rssiC.count) + "/5"
     );
-
     return;
   }
 
-  int medA =
-    rssiA.median();
+  if (!rssiA.alive() || !rssiB.alive() || !rssiC.alive()) {
+    sendBle("ERR:STALE");
+    return;
+  }
 
-  int medB =
-    rssiB.median();
-
-  int medC =
-    rssiC.median();
-
-  float d3d[3] = {
-
-    rssiToDistance3D(
-      medA
-    ),
-
-    rssiToDistance3D(
-      medB
-    ),
-
-    rssiToDistance3D(
-      medC
-    )
+  int medianRssi[3] = {
+    rssiA.median(),
+    rssiB.median(),
+    rssiC.median()
   };
 
+  float d3d[3] = {
+    rssiToDistance(medianRssi[0]),
+    rssiToDistance(medianRssi[1]),
+    rssiToDistance(medianRssi[2])
+  };
+
+  // Default: XY uses RSSI ranges directly.
   float dxy[3] = {
     d3d[0],
     d3d[1],
     d3d[2]
   };
 
-  float dz[3] = {
-    NAN,
-    NAN,
-    NAN
-  };
+  float p = pressureBuf.median();
+  float dz[3] = {NAN, NAN, NAN};
 
-  bool zCorrection =
-    false;
+  bool zCorrection = false;
 
-  float currentPress =
-    pressureBuf.median();
+  // Apply PRESS correction only when valid.
+  // If vertical difference is larger than RSSI distance,
+  // do NOT collapse dxy to 0.1m. Just disable Z correction.
+  if (pressureBuf.fresh() &&
+      validPressure(p) &&
+      allBasesReady()) {
 
-  if (
-    pressureBuf.fresh() &&
-    validPressure(currentPress) &&
-    allBasesReady()
-  ) {
+    dz[0] = relativeHeight(p, basePressA);
+    dz[1] = relativeHeight(p, basePressB);
+    dz[2] = relativeHeight(p, basePressC);
 
-    dz[0] =
-      relativeHeightMeters(
-        currentPress,
-        basePressA
-      );
+    bool geometryOK = true;
 
-    dz[1] =
-      relativeHeightMeters(
-        currentPress,
-        basePressB
-      );
-
-    dz[2] =
-      relativeHeightMeters(
-        currentPress,
-        basePressC
-      );
-
-    bool geometryOK =
-      true;
-
-    for (
-      int i = 0;
-      i < 3;
-      i++
-    ) {
-
-      if (
-        !isfinite(dz[i]) ||
-        fabsf(dz[i]) >= d3d[i]
-      ) {
-
-        geometryOK =
-          false;
-
-        break;
+    for (int i = 0; i < 3; i++) {
+      if (!isfinite(dz[i]) ||
+          d3d[i] * d3d[i] <= dz[i] * dz[i]) {
+        geometryOK = false;
       }
     }
 
     if (geometryOK) {
-
-      for (
-        int i = 0;
-        i < 3;
-        i++
-      ) {
-
-        float sq =
-          d3d[i] *
-          d3d[i] -
-          dz[i] *
-          dz[i];
-
-        dxy[i] =
-          sqrtf(
-            max(
-              sq,
-              0.25f
-            )
-          );
+      for (int i = 0; i < 3; i++) {
+        dxy[i] = sqrtf(
+          d3d[i] * d3d[i] -
+          dz[i] * dz[i]
+        );
       }
-
-      zCorrection =
-        true;
+      zCorrection = true;
     }
   }
 
   float weights[3] = {
-
-    rssiWeight(
-      rssiA
-    ),
-
-    rssiWeight(
-      rssiB
-    ),
-
-    rssiWeight(
-      rssiC
-    )
+    rssiWeight(rssiA),
+    rssiWeight(rssiB),
+    rssiWeight(rssiC)
   };
 
-  float x = 0;
-  float y = 0;
+  float x = 0.0f;
+  float y = 0.0f;
 
-  if (
-    !solveWLS(
-      dxy,
-      weights,
-      x,
-      y
-    )
-  ) {
-
-    sendBle(
-      "ERR:WLS"
-    );
-
+  if (!solveWLS(dxy, weights, x, y)) {
+    sendBle("ERR:WLS");
     return;
   }
 
-  float zRelA =
-    (
-      zCorrection &&
-      isfinite(dz[0])
-    )
+  float z =
+    (zCorrection && isfinite(dz[0]))
     ? dz[0]
-    : NAN;
+    : 0.0f;
 
-  String res =
+  Serial.printf(
+    "RSSI A=%d B=%d C=%d\n",
+    medianRssi[0],
+    medianRssi[1],
+    medianRssi[2]
+  );
+
+  Serial.printf(
+    "DIST d1=%.2f d2=%.2f d3=%.2f\n",
+    dxy[0],
+    dxy[1],
+    dxy[2]
+  );
+
+  Serial.printf(
+    "RESULT X=%.2f Y=%.2f Z=%.2f ZMODE=%d\n",
+    x, y, z, zCorrection ? 1 : 0
+  );
+
+  String result =
     "RES:" +
-    String(x, 2) +
-    "," +
-    String(y, 2) +
-    "," +
-    String(
-      isfinite(zRelA)
-      ? zRelA
-      : 0.0f,
-      2
-    ) +
-    "," +
-    String(dxy[0], 2) +
-    "," +
-    String(dxy[1], 2) +
-    "," +
-    String(dxy[2], 2) +
-    "," +
-    String(
-      zCorrection
-      ? 1
-      : 0
-    );
+    String(x, 2) + "," +
+    String(y, 2) + "," +
+    String(z, 2) + "," +
+    String(dxy[0], 2) + "," +
+    String(dxy[1], 2) + "," +
+    String(dxy[2], 2) + "," +
+    String(zCorrection ? 1 : 0);
 
-  sendBle(res);
+  sendBle(result);
 
-  if (zCorrection) {
-
-    sendBle(
-      "DZ:" +
-      String(dz[0], 2) +
-      "," +
-      String(dz[1], 2) +
-      "," +
-      String(dz[2], 2)
-    );
-
-  } else {
-
-    sendBle(
-      "WARN:ZCORR_OFF"
-    );
+  if (!zCorrection) {
+    sendBle("WARN:ZCORR_OFF");
   }
+
+  Serial.println("=============================\n");
 }
 
 // =====================================================
 // BLE callbacks
 // =====================================================
-class ServerCallbacks :
-  public BLEServerCallbacks {
-
-  void onConnect(
-    BLEServer*
-  ) override {
-
-    deviceConnected =
-      true;
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer*) override {
+    deviceConnected = true;
+    Serial.println("[BLE] CONNECTED");
   }
 
-  void onDisconnect(
-    BLEServer*
-  ) override {
-
-    deviceConnected =
-      false;
-
-    BLEDevice::
-    startAdvertising();
+  void onDisconnect(BLEServer*) override {
+    deviceConnected = false;
+    Serial.println("[BLE] DISCONNECTED");
+    BLEDevice::startAdvertising();
   }
 };
 
-class CommandCallbacks :
-  public BLECharacteristicCallbacks {
+class CommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pChar) override {
 
-  void onWrite(
-    BLECharacteristic* pChar
-  ) override {
-
-    String cmd =
-      pChar->
-      getValue().
-      c_str();
-
+    String cmd = pChar->getValue().c_str();
     cmd.trim();
-    cmd.toUpperCase();
 
-    if (
-      cmd == "MEASURE" ||
-      cmd == "1"
-    ) {
+    Serial.printf("[BLE RX CMD] %s\n", cmd.c_str());
 
+    if (cmd == "MEASURE" || cmd == "1") {
       runSnapshot();
       return;
     }
 
-    if (
-      cmd == "GETBASE"
-    ) {
-
-      sendBaseStatus();
+    if (cmd == "GETBASE") {
+      sendBase();
       return;
     }
 
-    if (
-      cmd == "CLRBASE"
-    ) {
+    if (cmd == "CAL:A" ||
+        cmd == "CAL:B" ||
+        cmd == "CAL:C") {
 
-      clearBases();
-      return;
-    }
-
-    if (
-      cmd == "CAL:A" ||
-      cmd == "CAL:B" ||
-      cmd == "CAL:C"
-    ) {
-
-      if (
-        !pressureBuf.fresh() ||
-        pressureBuf.count < 5
-      ) {
+      if (!pressureBuf.fresh() ||
+          pressureBuf.count < 5) {
 
         sendBle(
           "ERR:PRESS_SAMPLE," +
-          String(
-            pressureBuf.count
-          ) +
+          String(pressureBuf.count) +
           "/5"
         );
-
-        return;
-      }
-
-      float p =
-        pressureBuf.median();
-
-      if (
-        !validPressure(p)
-      ) {
-
-        sendBle(
-          "ERR:PRESS_INVALID"
-        );
-
         return;
       }
 
       saveBase(
         cmd.charAt(4),
-        p
+        pressureBuf.median()
       );
-
       return;
     }
 
-    if (
-      cmd == "GETMODEL"
-    ) {
-
-      sendRssiModel();
+    if (cmd == "GETMODEL") {
+      sendModel();
       return;
     }
 
-    if (
-      cmd.startsWith(
-        "SETMODEL:"
-      )
-    ) {
+    if (cmd.startsWith("SETMODEL:")) {
 
-      String values =
-        cmd.substring(9);
+      String values = cmd.substring(9);
+      int comma = values.indexOf(',');
 
-      int comma =
-        values.indexOf(',');
-
-      if (
-        comma < 0
-      ) {
-
-        sendBle(
-          "ERR:MODEL_FORMAT"
-        );
-
+      if (comma < 0) {
+        sendBle("ERR:MODEL_FORMAT");
         return;
       }
 
-      float newA =
-        values.
-        substring(
-          0,
-          comma
-        ).
-        toFloat();
+      float a =
+        values.substring(0, comma).toFloat();
 
-      float newN =
-        values.
-        substring(
-          comma + 1
-        ).
-        toFloat();
+      float n =
+        values.substring(comma + 1).toFloat();
 
-      if (
-        !setRssiModel(
-          newA,
-          newN
-        )
-      ) {
-
-        sendBle(
-          "ERR:MODEL_RANGE"
-        );
-      }
-
+      setModel(a, n);
       return;
     }
 
-    sendBle(
-      "ERR:CMD"
-    );
+    sendBle("ERR:CMD");
   }
 };
 
 // =====================================================
 // Status
+//
+// Dashboard reads:
+// STAT:aliveA,aliveB,aliveC,rssiA,rssiB,rssiC,currentPress
 // =====================================================
 unsigned long lastStatus = 0;
 
 void sendStatus() {
 
-  if (
-    millis() -
-    lastStatus <
-    1000
-  ) {
+  if (millis() - lastStatus < 1000) {
     return;
   }
 
-  lastStatus =
-    millis();
+  lastStatus = millis();
 
-  float p =
-    pressureBuf.median();
+  float p = pressureBuf.median();
 
-  String msg =
-
+  String stat =
     "STAT:" +
-
+    String(rssiA.alive() ? 1 : 0) + "," +
+    String(rssiB.alive() ? 1 : 0) + "," +
+    String(rssiC.alive() ? 1 : 0) + "," +
+    String(rssiA.median()) + "," +
+    String(rssiB.median()) + "," +
+    String(rssiC.median()) + "," +
     String(
-      rssiA.alive()
-      ? 1
-      : 0
-    ) +
-
-    "," +
-
-    String(
-      rssiB.alive()
-      ? 1
-      : 0
-    ) +
-
-    "," +
-
-    String(
-      rssiC.alive()
-      ? 1
-      : 0
-    ) +
-
-    "," +
-
-    String(
-      rssiA.median()
-    ) +
-
-    "," +
-
-    String(
-      rssiB.median()
-    ) +
-
-    "," +
-
-    String(
-      rssiC.median()
-    ) +
-
-    "," +
-
-    String(
-      pressureBuf.fresh() &&
-      validPressure(p)
+      pressureBuf.fresh() && validPressure(p)
       ? p
       : -1.0f,
       2
-    ) +
-
-    "," +
-
-    String(
-      allBasesReady()
-      ? 1
-      : 0
     );
 
-  sendBle(msg);
+  sendBle(stat);
 }
 
 // =====================================================
-// LoRa init
+// Setup
 // =====================================================
-void initLoRa() {
+void setup() {
 
-  pinMode(
-    LORA_NRST,
-    OUTPUT
-  );
+  Serial.begin(115200);
+  delay(1500);
 
-  digitalWrite(
-    LORA_NRST,
-    LOW
-  );
+  Serial.println();
+  Serial.println("====================================");
+  Serial.println(" SANJIGI MASTER BLE PROTOCOL FIXED");
+  Serial.println("====================================");
 
+  loadSettings();
+
+  pinMode(LORA_NRST, OUTPUT);
+
+  digitalWrite(LORA_NRST, LOW);
   delay(20);
 
-  digitalWrite(
-    LORA_NRST,
-    HIGH
-  );
-
+  digitalWrite(LORA_NRST, HIGH);
   delay(100);
 
   loraSPI.begin(
@@ -1334,91 +658,55 @@ void initLoRa() {
     LORA_NSS
   );
 
-  int state =
-    radio.begin(
-      923.0,
-      125.0,
-      9,
-      7,
-      0x12,
-      10,
-      8,
-      1.6,
-      true
-    );
+  int state = radio.begin(
+    923.0,
+    125.0,
+    9,
+    7,
+    0x12,
+    10,
+    8,
+    1.6,
+    true
+  );
 
-  if (
-    state ==
-    RADIOLIB_ERR_NONE
-  ) {
+  if (state == RADIOLIB_ERR_NONE) {
 
-    radio.setDio2AsRfSwitch(
-      true
-    );
+    radio.setDio2AsRfSwitch(true);
+    radio.startReceive();
 
-    // DIO1 interrupt callback
-    radio.setDio1Action(
-      setFlag
-    );
+    loraOK = true;
 
-    int rxState =
-      radio.startReceive();
-
-    if (
-      rxState ==
-      RADIOLIB_ERR_NONE
-    ) {
-
-      Serial.println(
-        "[LORA] Master OK / Interrupt RX"
-      );
-
-    } else {
-
-      Serial.printf(
-        "[LORA] startReceive FAIL code=%d\n",
-        rxState
-      );
-    }
+    Serial.println("[LORA] OK");
 
   } else {
 
     Serial.printf(
-      "[LORA] Master FAIL code=%d\n",
+      "[LORA] FAIL code=%d\n",
       state
     );
   }
-}
-
-// =====================================================
-// BLE init
-// =====================================================
-void initBLE() {
 
   BLEDevice::init(
     "Master_Rescue_Node"
   );
 
   BLEServer* pServer =
-    BLEDevice::
-    createServer();
+    BLEDevice::createServer();
 
   pServer->setCallbacks(
     new ServerCallbacks()
   );
 
   BLEService* pService =
-    pServer->
-    createService(
+    pServer->createService(
       SERVICE_UUID
     );
 
   BLECharacteristic* pCmdChar =
-    pService->
-    createCharacteristic(
+    pService->createCharacteristic(
       CHAR_CMD_UUID,
-      BLECharacteristic::
-      PROPERTY_WRITE
+      BLECharacteristic::PROPERTY_WRITE
     );
 
   pCmdChar->setCallbacks(
@@ -1426,58 +714,28 @@ void initBLE() {
   );
 
   pDataChar =
-    pService->
-    createCharacteristic(
+    pService->createCharacteristic(
       CHAR_DATA_UUID,
-      BLECharacteristic::
-      PROPERTY_READ |
-      BLECharacteristic::
-      PROPERTY_NOTIFY
+      BLECharacteristic::PROPERTY_READ |
+      BLECharacteristic::PROPERTY_NOTIFY
     );
 
-  pDataChar->
-  addDescriptor(
+  pDataChar->addDescriptor(
     new BLE2902()
   );
 
   pService->start();
 
-  BLEAdvertising* adv =
-    BLEDevice::
-    getAdvertising();
+  BLEAdvertising* pAdvertising =
+    BLEDevice::getAdvertising();
 
-  adv->
-  addServiceUUID(
+  pAdvertising->addServiceUUID(
     SERVICE_UUID
   );
 
-  adv->start();
+  pAdvertising->start();
 
-  Serial.println(
-    "[BLE] Ready"
-  );
-}
-
-// =====================================================
-// Setup
-// =====================================================
-void setup() {
-
-  Serial.begin(
-    115200
-  );
-
-  delay(1500);
-
-  Serial.println(
-    "\n=== SANJIGI MASTER / PRESS + WLS / INTERRUPT RX ==="
-  );
-
-  loadBases();
-  loadRssiModel();
-
-  initLoRa();
-  initBLE();
+  Serial.println("[BLE] READY");
 }
 
 // =====================================================
@@ -1485,61 +743,30 @@ void setup() {
 // =====================================================
 void loop() {
 
-  // 실제 DIO1 인터럽트가 발생했을 때만
-  // LoRa FIFO를 읽는다.
-  if (receivedFlag) {
+  if (loraOK) {
 
-    receivedFlag =
-      false;
-
-    String msg;
+    String packet;
 
     int state =
-      radio.readData(msg);
+      radio.readData(packet);
 
-    if (
-      state ==
-      RADIOLIB_ERR_NONE
-    ) {
+    if (state == RADIOLIB_ERR_NONE) {
 
       int directRssi =
-        (int)
-        radio.getRSSI();
+        (int)lroundf(
+          radio.getRSSI()
+        );
 
-      Serial.printf(
-        "[LORA RX] %s | RSSI:%d dBm\n",
-        msg.c_str(),
+      parsePacket(
+        packet,
         directRssi
       );
 
-      parseIncomingPacket(
-        msg,
-        directRssi
-      );
-
-    } else {
-
-      Serial.printf(
-        "[LORA RX ERROR] code=%d\n",
-        state
-      );
-    }
-
-    // 다음 LoRa 패킷 수신 대기
-    int rxState =
       radio.startReceive();
-
-    if (
-      rxState !=
-      RADIOLIB_ERR_NONE
-    ) {
-
-      Serial.printf(
-        "[LORA RX RESTART FAIL] code=%d\n",
-        rxState
-      );
     }
   }
 
   sendStatus();
+
+  delay(2);
 }
