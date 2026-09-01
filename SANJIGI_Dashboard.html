@@ -147,7 +147,30 @@ const CHAR_DATA_UUID="a3c17822-1d5b-4176-a447-0624916a0487";
 let cmdChar=null;
 
 function log(msg){const b=document.getElementById('log');b.innerHTML+='<br>> '+msg;b.scrollTop=b.scrollHeight;}
-async function sendCmd(cmd){if(!cmdChar)return;await cmdChar.writeValue(new TextEncoder().encode(cmd));log('전송: '+cmd);}
+async function sendCmd(cmd){
+  if(!cmdChar){log('<span style="color:red">BLE 명령 채널이 연결되지 않았습니다.</span>');return false;}
+  const data=new TextEncoder().encode(cmd);
+  try{
+    // ESP32 WRITE characteristic에는 응답형 쓰기를 우선 사용한다.
+    if(typeof cmdChar.writeValueWithResponse==='function'){
+      await cmdChar.writeValueWithResponse(data);
+    }else{
+      await cmdChar.writeValue(data);
+    }
+    log('전송 성공: '+cmd);
+    return true;
+  }catch(e){
+    // 브라우저/스택에 따라 응답형 쓰기가 실패하면 일반 write로 한 번 재시도한다.
+    try{
+      await cmdChar.writeValue(data);
+      log('전송 성공(재시도): '+cmd);
+      return true;
+    }catch(e2){
+      log('<span style="color:red">전송 실패: '+cmd+' / '+e2+'</span>');
+      return false;
+    }
+  }
+}
 function setEnabled(v){['measureBtn','calA','calB','calC','getBase','saveModel','getModel','saveDist','getDist'].forEach(id=>document.getElementById(id).disabled=!v);}
 
 document.getElementById('connectBtn').onclick=async()=>{
@@ -165,7 +188,9 @@ document.getElementById('connectBtn').onclick=async()=>{
     setEnabled(true);
     log('마스터 연결 성공');
     await sendCmd('GETDIST');
+    await new Promise(r=>setTimeout(r,120));
     await sendCmd('GETBASE');
+    await new Promise(r=>setTimeout(r,120));
     await sendCmd('GETMODEL');
   }catch(e){log('연결 실패: '+e);}
 };
