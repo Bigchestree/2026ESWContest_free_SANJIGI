@@ -19,7 +19,13 @@
 #define LORA_MOSI 9
 
 SPIClass loraSPI(FSPI);
-SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY, loraSPI);
+SX1262 radio = new Module(
+  LORA_NSS,
+  LORA_DIO1,
+  LORA_NRST,
+  LORA_BUSY,
+  loraSPI
+);
 
 bool loraOK = false;
 volatile bool receivedFlag = false;
@@ -29,7 +35,7 @@ void setFlag() {
 }
 
 // ================= Anchor 좌표 =================
-// ===== 고정 앵커 좌표 =====
+// 고정 앵커 좌표
 // AB = 15m
 // AC = 20m
 // BC = 15m
@@ -64,18 +70,27 @@ float baseC = NAN;
 
 // ================= RSSI BUFFER =================
 struct RssiBuf {
+
   int v[5] = {0};
+
   int idx = 0;
   int count = 0;
+
   unsigned long last = 0;
 
   void add(int r) {
+
     if (r > -10 || r < -140) return;
 
     v[idx++] = r;
 
-    if (idx >= 5) idx = 0;
-    if (count < 5) count++;
+    if (idx >= 5) {
+      idx = 0;
+    }
+
+    if (count < 5) {
+      count++;
+    }
 
     last = millis();
   }
@@ -85,24 +100,39 @@ struct RssiBuf {
   }
 
   bool alive() {
-    return count > 0 && millis() - last < 7000;
+    return count > 0 &&
+           millis() - last < 7000;
   }
 
   int median() {
-    if (count < 5) return -999;
+
+    if (count < 5) {
+      return -999;
+    }
 
     int t[5];
-    memcpy(t, v, sizeof(t));
 
-    std::sort(t, t + 5);
+    memcpy(
+      t,
+      v,
+      sizeof(t)
+    );
+
+    std::sort(
+      t,
+      t + 5
+    );
 
     return t[2];
   }
 
   float spread() {
-    if (count < 2) return 10.0f;
 
-    float mean = 0;
+    if (count < 2) {
+      return 10.0f;
+    }
+
+    float mean = 0.0f;
 
     for (int i = 0; i < count; i++) {
       mean += v[i];
@@ -110,14 +140,20 @@ struct RssiBuf {
 
     mean /= count;
 
-    float sum = 0;
+    float sum = 0.0f;
 
     for (int i = 0; i < count; i++) {
-      float d = v[i] - mean;
-      sum += d * d;
+
+      float d =
+        v[i] - mean;
+
+      sum +=
+        d * d;
     }
 
-    return sqrtf(sum / (count - 1));
+    return sqrtf(
+      sum / (count - 1)
+    );
   }
 };
 
@@ -126,44 +162,73 @@ RssiBuf rB;
 RssiBuf rC;
 
 // ================= PRESS BUFFER =================
+// 기존 10개 → 30개
 struct PressBuf {
-  float v[10] = {0};
+
+  float v[30] = {0};
+
   int idx = 0;
   int count = 0;
+
   unsigned long last = 0;
 
   void add(float p) {
-    if (!isfinite(p)) return;
-    if (p < 300 || p > 1100) return;
+
+    if (!isfinite(p)) {
+      return;
+    }
+
+    if (p < 300 || p > 1100) {
+      return;
+    }
 
     v[idx++] = p;
 
-    if (idx >= 10) idx = 0;
-    if (count < 10) count++;
+    if (idx >= 30) {
+      idx = 0;
+    }
+
+    if (count < 30) {
+      count++;
+    }
 
     last = millis();
   }
 
   bool fresh() {
-    return count > 0 && millis() - last < 7000;
+
+    return count > 0 &&
+           millis() - last < 7000;
   }
 
   float median() {
-    if (count == 0) return NAN;
 
-    float t[10];
+    if (count == 0) {
+      return NAN;
+    }
+
+    float t[30];
 
     for (int i = 0; i < count; i++) {
       t[i] = v[i];
     }
 
-    std::sort(t, t + count);
+    std::sort(
+      t,
+      t + count
+    );
 
     if (count % 2) {
-      return t[count / 2];
-    }
 
-    return (t[count / 2 - 1] + t[count / 2]) / 2.0f;
+      return t[count / 2];
+
+    } else {
+
+      return (
+        t[count / 2 - 1] +
+        t[count / 2]
+      ) / 2.0f;
+    }
   }
 };
 
@@ -174,92 +239,183 @@ PressBuf press;
 // =====================================================
 
 bool validPress(float p) {
-  return isfinite(p) && p >= 300 && p <= 1100;
+
+  return isfinite(p) &&
+         p >= 300 &&
+         p <= 1100;
 }
 
 void bleSend(const String& s) {
-  Serial.println("[BLE TX] " + s);
 
-  if (!bleConnected || dataChar == nullptr) return;
+  Serial.println(
+    "[BLE TX] " + s
+  );
 
-  dataChar->setValue(s.c_str());
+  if (
+    !bleConnected ||
+    dataChar == nullptr
+  ) {
+    return;
+  }
+
+  dataChar->setValue(
+    s.c_str()
+  );
+
   dataChar->notify();
 
   delay(20);
 }
 
-bool getPressure(const String& msg, float& p) {
-  int i = msg.indexOf("PRESS:");
+bool getPressure(
+  const String& msg,
+  float& p
+) {
 
-  if (i < 0) return false;
+  int i =
+    msg.indexOf("PRESS:");
 
-  String s = msg.substring(i + 6);
-
-  int comma = s.indexOf(',');
-
-  if (comma >= 0) {
-    s = s.substring(0, comma);
+  if (i < 0) {
+    return false;
   }
 
-  p = s.toFloat();
+  String s =
+    msg.substring(i + 6);
+
+  int comma =
+    s.indexOf(',');
+
+  if (comma >= 0) {
+
+    s =
+      s.substring(
+        0,
+        comma
+      );
+  }
+
+  p =
+    s.toFloat();
 
   return validPress(p);
 }
 
-bool getRelayRSSI(const String& msg, int& r) {
-  int i = msg.indexOf("RSSI:");
+bool getRelayRSSI(
+  const String& msg,
+  int& r
+) {
 
-  if (i < 0) return false;
+  int i =
+    msg.indexOf("RSSI:");
 
-  String s = msg.substring(i + 5);
-
-  int comma = s.indexOf(',');
-
-  if (comma >= 0) {
-    s = s.substring(0, comma);
+  if (i < 0) {
+    return false;
   }
 
-  r = s.toInt();
+  String s =
+    msg.substring(i + 5);
 
-  return r <= -10 && r >= -140;
+  int comma =
+    s.indexOf(',');
+
+  if (comma >= 0) {
+
+    s =
+      s.substring(
+        0,
+        comma
+      );
+  }
+
+  r =
+    s.toInt();
+
+  return r <= -10 &&
+         r >= -140;
 }
 
 float rssiDistance(int rssi) {
+
   return powf(
     10.0f,
-    (modelA - (float)rssi) / (10.0f * modelN)
+    (
+      modelA -
+      (float)rssi
+    ) /
+    (
+      10.0f *
+      modelN
+    )
   );
 }
 
 float getWeight(RssiBuf& b) {
-  float sigma = b.spread();
 
-  float w = 1.0f / (sigma * sigma + 4.0f);
+  float sigma =
+    b.spread();
 
-  if (w < 0.01f) w = 0.01f;
-  if (w > 0.25f) w = 0.25f;
+  float w =
+    1.0f /
+    (
+      sigma * sigma +
+      4.0f
+    );
+
+  if (w < 0.01f) {
+    w = 0.01f;
+  }
+
+  if (w > 0.25f) {
+    w = 0.25f;
+  }
 
   return w;
 }
 
-float pressureHeight(float current, float reference) {
-  return 44330.0f *
-         (1.0f - powf(current / reference, 0.19029495f));
+float pressureHeight(
+  float current,
+  float reference
+) {
+
+  return
+    44330.0f *
+    (
+      1.0f -
+      powf(
+        current / reference,
+        0.19029495f
+      )
+    );
 }
 
 // =====================================================
 // LoRa 패킷 처리
 // =====================================================
 
-void processPacket(const String& msg, int directRSSI) {
+void processPacket(
+  const String& msg,
+  int directRSSI
+) {
 
-  if (msg.startsWith("TARGET:PING")) {
+  if (
+    msg.startsWith(
+      "TARGET:PING"
+    )
+  ) {
 
-    rA.add(directRSSI);
+    rA.add(
+      directRSSI
+    );
 
     float p;
 
-    if (getPressure(msg, p)) {
+    if (
+      getPressure(
+        msg,
+        p
+      )
+    ) {
+
       press.add(p);
     }
 
@@ -272,11 +428,21 @@ void processPacket(const String& msg, int directRSSI) {
     return;
   }
 
-  if (msg.startsWith("ANCHOR2:")) {
+  if (
+    msg.startsWith(
+      "ANCHOR2:"
+    )
+  ) {
 
     int rssi;
 
-    if (getRelayRSSI(msg, rssi)) {
+    if (
+      getRelayRSSI(
+        msg,
+        rssi
+      )
+    ) {
+
       rB.add(rssi);
 
       Serial.printf(
@@ -288,11 +454,21 @@ void processPacket(const String& msg, int directRSSI) {
     return;
   }
 
-  if (msg.startsWith("ANCHOR3:")) {
+  if (
+    msg.startsWith(
+      "ANCHOR3:"
+    )
+  ) {
 
     int rssi;
 
-    if (getRelayRSSI(msg, rssi)) {
+    if (
+      getRelayRSSI(
+        msg,
+        rssi
+      )
+    ) {
+
       rC.add(rssi);
 
       Serial.printf(
@@ -304,7 +480,10 @@ void processPacket(const String& msg, int directRSSI) {
     return;
   }
 
-  Serial.print("[UNKNOWN] ");
+  Serial.print(
+    "[UNKNOWN] "
+  );
+
   Serial.println(msg);
 }
 
@@ -312,15 +491,33 @@ void processPacket(const String& msg, int directRSSI) {
 // WLS
 // =====================================================
 
-bool solveWLS(float d[3], float w[3], float& x, float& y) {
+bool solveWLS(
+  float d[3],
+  float w[3],
+  float& x,
+  float& y
+) {
 
-  const float px[3] = {AX, BX, CX};
-  const float py[3] = {AY, BY, CY};
+  const float px[3] = {
+    AX,
+    BX,
+    CX
+  };
+
+  const float py[3] = {
+    AY,
+    BY,
+    CY
+  };
 
   x = 40.0f;
   y = 23.0f;
 
-  for (int iter = 0; iter < 20; iter++) {
+  for (
+    int iter = 0;
+    iter < 20;
+    iter++
+  ) {
 
     float h00 = 0;
     float h01 = 0;
@@ -329,55 +526,136 @@ bool solveWLS(float d[3], float w[3], float& x, float& y) {
     float g0 = 0;
     float g1 = 0;
 
-    for (int i = 0; i < 3; i++) {
+    for (
+      int i = 0;
+      i < 3;
+      i++
+    ) {
 
-      float dx = x - px[i];
-      float dy = y - py[i];
+      float dx =
+        x - px[i];
 
-      float predicted = sqrtf(dx * dx + dy * dy);
+      float dy =
+        y - py[i];
 
-      if (predicted < 0.01f) predicted = 0.01f;
+      float predicted =
+        sqrtf(
+          dx * dx +
+          dy * dy
+        );
 
-      float residual = predicted - d[i];
+      if (
+        predicted <
+        0.01f
+      ) {
 
-      float jx = dx / predicted;
-      float jy = dy / predicted;
+        predicted =
+          0.01f;
+      }
 
-      h00 += w[i] * jx * jx;
-      h01 += w[i] * jx * jy;
-      h11 += w[i] * jy * jy;
+      float residual =
+        predicted -
+        d[i];
 
-      g0 += w[i] * jx * residual;
-      g1 += w[i] * jy * residual;
+      float jx =
+        dx /
+        predicted;
+
+      float jy =
+        dy /
+        predicted;
+
+      h00 +=
+        w[i] *
+        jx *
+        jx;
+
+      h01 +=
+        w[i] *
+        jx *
+        jy;
+
+      h11 +=
+        w[i] *
+        jy *
+        jy;
+
+      g0 +=
+        w[i] *
+        jx *
+        residual;
+
+      g1 +=
+        w[i] *
+        jy *
+        residual;
     }
 
-    float det = h00 * h11 - h01 * h01;
+    float det =
+      h00 * h11 -
+      h01 * h01;
 
-    if (fabsf(det) < 0.000001f) {
+    if (
+      fabsf(det) <
+      0.000001f
+    ) {
+
       return false;
     }
 
     float sx =
-      -(h11 * g0 - h01 * g1) / det;
+      -(
+        h11 * g0 -
+        h01 * g1
+      ) /
+      det;
 
     float sy =
-      -(-h01 * g0 + h00 * g1) / det;
+      -(
+        -h01 * g0 +
+        h00 * g1
+      ) /
+      det;
 
-    float step = sqrtf(sx * sx + sy * sy);
+    float step =
+      sqrtf(
+        sx * sx +
+        sy * sy
+      );
 
-    if (step > 30.0f) {
-      sx *= 30.0f / step;
-      sy *= 30.0f / step;
+    if (
+      step >
+      30.0f
+    ) {
+
+      sx *=
+        30.0f /
+        step;
+
+      sy *=
+        30.0f /
+        step;
     }
 
     x += sx;
     y += sy;
 
-    if (!isfinite(x) || !isfinite(y)) {
+    if (
+      !isfinite(x) ||
+      !isfinite(y)
+    ) {
+
       return false;
     }
 
-    if (sqrtf(sx * sx + sy * sy) < 0.01f) {
+    if (
+      sqrtf(
+        sx * sx +
+        sy * sy
+      ) <
+      0.01f
+    ) {
+
       break;
     }
   }
@@ -392,15 +670,25 @@ bool solveWLS(float d[3], float w[3], float& x, float& y) {
 void measure() {
 
   Serial.println();
-  Serial.println("===== MEASURE =====");
 
-  if (!rA.ready() || !rB.ready() || !rC.ready()) {
+  Serial.println(
+    "===== MEASURE ====="
+  );
+
+  if (
+    !rA.ready() ||
+    !rB.ready() ||
+    !rC.ready()
+  ) {
 
     String err =
       "ERR:SAMPLE," +
-      String(rA.count) + "/5," +
-      String(rB.count) + "/5," +
-      String(rC.count) + "/5";
+      String(rA.count) +
+      "/5," +
+      String(rB.count) +
+      "/5," +
+      String(rC.count) +
+      "/5";
 
     bleSend(err);
 
@@ -409,43 +697,71 @@ void measure() {
     return;
   }
 
-  if (!rA.alive() || !rB.alive() || !rC.alive()) {
+  if (
+    !rA.alive() ||
+    !rB.alive() ||
+    !rC.alive()
+  ) {
 
-    bleSend("ERR:STALE");
+    bleSend(
+      "ERR:STALE"
+    );
 
     return;
   }
 
-  int ma = rA.median();
-  int mb = rB.median();
-  int mc = rC.median();
+  int ma =
+    rA.median();
+
+  int mb =
+    rB.median();
+
+  int mc =
+    rC.median();
 
   float d[3] = {
+
     rssiDistance(ma),
+
     rssiDistance(mb),
+
     rssiDistance(mc)
   };
 
   float w[3] = {
+
     getWeight(rA),
+
     getWeight(rB),
+
     getWeight(rC)
   };
 
   float x;
   float y;
 
-  if (!solveWLS(d, w, x, y)) {
+  if (
+    !solveWLS(
+      d,
+      w,
+      x,
+      y
+    )
+  ) {
 
-    bleSend("ERR:WLS");
+    bleSend(
+      "ERR:WLS"
+    );
 
     return;
   }
 
   float z = 0.0f;
+
   int zMode = 0;
 
-  float currentP = press.median();
+  float currentP =
+    press.median();
 
   if (
     press.fresh() &&
@@ -453,39 +769,75 @@ void measure() {
     validPress(baseA)
   ) {
 
-    z = pressureHeight(currentP, baseA);
+    z =
+      pressureHeight(
+        currentP,
+        baseA
+      );
+
+    // ===============================
+    // Z 데드밴드
+    // ±1.5m 미만은 센서 흔들림으로 보고 0 처리
+    // ===============================
+    if (
+      fabsf(z) <
+      1.5f
+    ) {
+
+      z = 0.0f;
+    }
 
     zMode = 1;
   }
 
   Serial.printf(
     "RSSI A=%d B=%d C=%d\n",
-    ma, mb, mc
+    ma,
+    mb,
+    mc
   );
 
   Serial.printf(
     "DIST A=%.2f B=%.2f C=%.2f\n",
-    d[0], d[1], d[2]
+    d[0],
+    d[1],
+    d[2]
+  );
+
+  Serial.printf(
+    "PRESS CURRENT=%.2f BASE_A=%.2f\n",
+    currentP,
+    baseA
   );
 
   Serial.printf(
     "RESULT X=%.2f Y=%.2f Z=%.2f\n",
-    x, y, z
+    x,
+    y,
+    z
   );
 
   String result =
     "RES:" +
-    String(x, 2) + "," +
-    String(y, 2) + "," +
-    String(z, 2) + "," +
-    String(d[0], 2) + "," +
-    String(d[1], 2) + "," +
-    String(d[2], 2) + "," +
+    String(x, 2) +
+    "," +
+    String(y, 2) +
+    "," +
+    String(z, 2) +
+    "," +
+    String(d[0], 2) +
+    "," +
+    String(d[1], 2) +
+    "," +
+    String(d[2], 2) +
+    "," +
     String(zMode);
 
   bleSend(result);
 
-  Serial.println("===================");
+  Serial.println(
+    "==================="
+  );
 }
 
 // =====================================================
@@ -494,65 +846,135 @@ void measure() {
 
 void loadSettings() {
 
-  prefs.begin("sanjigi", false);
+  prefs.begin(
+    "sanjigi",
+    false
+  );
 
   modelA =
-    prefs.getFloat("modelA", -40.0f);
+    prefs.getFloat(
+      "modelA",
+      -40.0f
+    );
 
   modelN =
-    prefs.getFloat("modelN", 2.8f);
+    prefs.getFloat(
+      "modelN",
+      2.8f
+    );
 
   baseA =
-    prefs.getFloat("baseA", NAN);
+    prefs.getFloat(
+      "baseA",
+      NAN
+    );
 
   baseB =
-    prefs.getFloat("baseB", NAN);
+    prefs.getFloat(
+      "baseB",
+      NAN
+    );
 
   baseC =
-    prefs.getFloat("baseC", NAN);
+    prefs.getFloat(
+      "baseC",
+      NAN
+    );
 }
 
 void sendBase() {
 
   String s =
     "BASE:" +
-    String(validPress(baseA) ? baseA : -1.0f, 2) + "," +
-    String(validPress(baseB) ? baseB : -1.0f, 2) + "," +
-    String(validPress(baseC) ? baseC : -1.0f, 2);
+    String(
+      validPress(baseA)
+        ? baseA
+        : -1.0f,
+      2
+    ) +
+    "," +
+    String(
+      validPress(baseB)
+        ? baseB
+        : -1.0f,
+      2
+    ) +
+    "," +
+    String(
+      validPress(baseC)
+        ? baseC
+        : -1.0f,
+      2
+    );
 
   bleSend(s);
 }
 
 void saveBase(char node) {
 
-  if (!press.fresh() || press.count < 5) {
+  // ===============================
+  // 기존 5개 → 최소 20개
+  // ===============================
+  if (
+    !press.fresh() ||
+    press.count < 20
+  ) {
 
-    bleSend("ERR:PRESS_SAMPLE");
+    bleSend(
+      "ERR:PRESS_SAMPLE"
+    );
 
     return;
   }
 
-  float p = press.median();
+  float p =
+    press.median();
 
-  if (node == 'A') {
+  if (
+    !validPress(p)
+  ) {
+
+    bleSend(
+      "ERR:PRESS_INVALID"
+    );
+
+    return;
+  }
+
+  if (
+    node == 'A'
+  ) {
 
     baseA = p;
 
-    prefs.putFloat("baseA", p);
+    prefs.putFloat(
+      "baseA",
+      p
+    );
   }
 
-  if (node == 'B') {
+  if (
+    node == 'B'
+  ) {
 
     baseB = p;
 
-    prefs.putFloat("baseB", p);
+    prefs.putFloat(
+      "baseB",
+      p
+    );
   }
 
-  if (node == 'C') {
+  if (
+    node == 'C'
+  ) {
 
     baseC = p;
 
-    prefs.putFloat("baseC", p);
+    prefs.putFloat(
+      "baseC",
+      p
+    );
   }
 
   bleSend(
@@ -567,28 +989,44 @@ void sendModel() {
 
   bleSend(
     "MODEL:" +
-    String(modelA, 2) +
+    String(
+      modelA,
+      2
+    ) +
     "," +
-    String(modelN, 3)
+    String(
+      modelN,
+      3
+    )
   );
 }
 
 void setModel(String s) {
 
-  int comma = s.indexOf(',');
+  int comma =
+    s.indexOf(',');
 
-  if (comma < 0) {
+  if (
+    comma < 0
+  ) {
 
-    bleSend("ERR:MODEL_FORMAT");
+    bleSend(
+      "ERR:MODEL_FORMAT"
+    );
 
     return;
   }
 
   float a =
-    s.substring(0, comma).toFloat();
+    s.substring(
+      0,
+      comma
+    ).toFloat();
 
   float n =
-    s.substring(comma + 1).toFloat();
+    s.substring(
+      comma + 1
+    ).toFloat();
 
   if (
     a < -100 ||
@@ -597,7 +1035,9 @@ void setModel(String s) {
     n > 6
   ) {
 
-    bleSend("ERR:MODEL_RANGE");
+    bleSend(
+      "ERR:MODEL_RANGE"
+    );
 
     return;
   }
@@ -605,8 +1045,15 @@ void setModel(String s) {
   modelA = a;
   modelN = n;
 
-  prefs.putFloat("modelA", a);
-  prefs.putFloat("modelN", n);
+  prefs.putFloat(
+    "modelA",
+    a
+  );
+
+  prefs.putFloat(
+    "modelN",
+    n
+  );
 
   bleSend(
     "MODELOK:" +
@@ -620,28 +1067,40 @@ void setModel(String s) {
 // BLE CALLBACK
 // =====================================================
 
-class ServerCB : public BLEServerCallbacks {
+class ServerCB :
+  public BLEServerCallbacks {
 
-  void onConnect(BLEServer*) override {
+  void onConnect(
+    BLEServer*
+  ) override {
 
     bleConnected = true;
 
-    Serial.println("[BLE] CONNECTED");
+    Serial.println(
+      "[BLE] CONNECTED"
+    );
   }
 
-  void onDisconnect(BLEServer*) override {
+  void onDisconnect(
+    BLEServer*
+  ) override {
 
     bleConnected = false;
 
-    Serial.println("[BLE] DISCONNECTED");
+    Serial.println(
+      "[BLE] DISCONNECTED"
+    );
 
     BLEDevice::startAdvertising();
   }
 };
 
-class CommandCB : public BLECharacteristicCallbacks {
+class CommandCB :
+  public BLECharacteristicCallbacks {
 
-  void onWrite(BLECharacteristic* c) override {
+  void onWrite(
+    BLECharacteristic* c
+  ) override {
 
     String cmd =
       c->getValue().c_str();
@@ -649,35 +1108,50 @@ class CommandCB : public BLECharacteristicCallbacks {
     cmd.trim();
 
     Serial.println(
-      "[BLE RX] " + cmd
+      "[BLE RX] " +
+      cmd
     );
 
-    if (cmd == "MEASURE") {
+    if (
+      cmd == "MEASURE"
+    ) {
 
       measure();
 
-    } else if (cmd == "GETBASE") {
+    } else if (
+      cmd == "GETBASE"
+    ) {
 
       sendBase();
 
-    } else if (cmd == "CAL:A") {
+    } else if (
+      cmd == "CAL:A"
+    ) {
 
       saveBase('A');
 
-    } else if (cmd == "CAL:B") {
+    } else if (
+      cmd == "CAL:B"
+    ) {
 
       saveBase('B');
 
-    } else if (cmd == "CAL:C") {
+    } else if (
+      cmd == "CAL:C"
+    ) {
 
       saveBase('C');
 
-    } else if (cmd == "GETMODEL") {
+    } else if (
+      cmd == "GETMODEL"
+    ) {
 
       sendModel();
 
     } else if (
-      cmd.startsWith("SETMODEL:")
+      cmd.startsWith(
+        "SETMODEL:"
+      )
     ) {
 
       setModel(
@@ -686,7 +1160,9 @@ class CommandCB : public BLECharacteristicCallbacks {
 
     } else {
 
-      bleSend("ERR:CMD");
+      bleSend(
+        "ERR:CMD"
+      );
     }
   }
 };
@@ -699,27 +1175,65 @@ unsigned long lastStat = 0;
 
 void sendStatus() {
 
-  if (!bleConnected) return;
-
   if (
-    millis() - lastStat < 1000
+    !bleConnected
   ) {
     return;
   }
 
-  lastStat = millis();
+  if (
+    millis() -
+    lastStat <
+    1000
+  ) {
 
-  float p = press.median();
+    return;
+  }
+
+  lastStat =
+    millis();
+
+  float p =
+    press.median();
 
   String s =
     "STAT:" +
-    String(rA.alive() ? 1 : 0) + "," +
-    String(rB.alive() ? 1 : 0) + "," +
-    String(rC.alive() ? 1 : 0) + "," +
-    String(rA.median()) + "," +
-    String(rB.median()) + "," +
-    String(rC.median()) + "," +
-    String(validPress(p) ? p : -1.0f, 2);
+    String(
+      rA.alive()
+        ? 1
+        : 0
+    ) +
+    "," +
+    String(
+      rB.alive()
+        ? 1
+        : 0
+    ) +
+    "," +
+    String(
+      rC.alive()
+        ? 1
+        : 0
+    ) +
+    "," +
+    String(
+      rA.median()
+    ) +
+    "," +
+    String(
+      rB.median()
+    ) +
+    "," +
+    String(
+      rC.median()
+    ) +
+    "," +
+    String(
+      validPress(p)
+        ? p
+        : -1.0f,
+      2
+    );
 
   bleSend(s);
 }
@@ -730,7 +1244,10 @@ void sendStatus() {
 
 void initLoRa() {
 
-  pinMode(LORA_NRST, OUTPUT);
+  pinMode(
+    LORA_NRST,
+    OUTPUT
+  );
 
   digitalWrite(
     LORA_NRST,
@@ -771,9 +1288,13 @@ void initLoRa() {
     RADIOLIB_ERR_NONE
   ) {
 
-    radio.setDio2AsRfSwitch(true);
+    radio.setDio2AsRfSwitch(
+      true
+    );
 
-    radio.setPacketReceivedAction(setFlag);
+    radio.setPacketReceivedAction(
+      setFlag
+    );
 
     radio.startReceive();
 
@@ -802,7 +1323,9 @@ void initBLE() {
     "Master_Rescue_Node"
   );
 
-  BLEDevice::setMTU(128);
+  BLEDevice::setMTU(
+    128
+  );
 
   BLEServer* server =
     BLEDevice::createServer();
@@ -859,11 +1382,14 @@ void initBLE() {
 
 void setup() {
 
-  Serial.begin(115200);
+  Serial.begin(
+    115200
+  );
 
   delay(1500);
 
   Serial.println();
+
   Serial.println(
     "=== SANJIGI MASTER ==="
   );
@@ -890,12 +1416,15 @@ void loop() {
     receivedFlag
   ) {
 
-    receivedFlag = false;
+    receivedFlag =
+      false;
 
     String msg;
 
     int state =
-      radio.readData(msg);
+      radio.readData(
+        msg
+      );
 
     if (
       state ==
@@ -903,7 +1432,8 @@ void loop() {
     ) {
 
       int rssi =
-        (int)radio.getRSSI();
+        (int)
+        radio.getRSSI();
 
       processPacket(
         msg,
