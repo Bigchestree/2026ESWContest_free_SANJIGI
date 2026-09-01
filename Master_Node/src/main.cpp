@@ -759,7 +759,12 @@ void loop() {
 
   if (state == RADIOLIB_ERR_NONE) {
     int directRssi = (int)radio.getRSSI();
+
+    Serial.printf("[LORA RX] %s | RSSI:%d dBm\n",
+                  msg.c_str(), directRssi);
+
     parseIncomingPacket(msg, directRssi);
+
     radio.startReceive();
   }
 
