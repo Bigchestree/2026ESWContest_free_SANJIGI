@@ -34,11 +34,12 @@ void setFlag() {
   receivedFlag = true;
 }
 
-// ================= Anchor 좌표 =================
-// 고정 앵커 좌표
+// =====================================================
+// 고정 Anchor 좌표
 // AB = 15m
 // AC = 20m
 // BC = 15m
+// =====================================================
 
 const float AX = 0.0f;
 const float AY = 0.0f;
@@ -50,6 +51,7 @@ const float CX = 13.3333f;
 const float CY = 14.9071f;
 
 // ================= BLE =================
+
 #define SERVICE_UUID   "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHAR_CMD_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define CHAR_DATA_UUID "a3c17822-1d5b-4176-a447-0624916a0487"
@@ -60,15 +62,20 @@ bool bleConnected = false;
 Preferences prefs;
 
 // ================= RSSI 모델 =================
+
 float modelA = -40.0f;
 float modelN = 2.8f;
 
 // ================= 기준 기압 =================
+
 float baseA = NAN;
 float baseB = NAN;
 float baseC = NAN;
 
-// ================= RSSI BUFFER =================
+// =====================================================
+// RSSI BUFFER
+// =====================================================
+
 struct RssiBuf {
 
   int v[5] = {0};
@@ -147,8 +154,7 @@ struct RssiBuf {
       float d =
         v[i] - mean;
 
-      sum +=
-        d * d;
+      sum += d * d;
     }
 
     return sqrtf(
@@ -161,8 +167,11 @@ RssiBuf rA;
 RssiBuf rB;
 RssiBuf rC;
 
-// ================= PRESS BUFFER =================
-// 기존 10개 → 30개
+// =====================================================
+// PRESS BUFFER
+// 30개 기압값 중앙값 사용
+// =====================================================
+
 struct PressBuf {
 
   float v[30] = {0};
@@ -174,11 +183,10 @@ struct PressBuf {
 
   void add(float p) {
 
-    if (!isfinite(p)) {
-      return;
-    }
+    if (!isfinite(p)) return;
 
-    if (p < 300 || p > 1100) {
+    if (p < 300.0f ||
+        p > 1100.0f) {
       return;
     }
 
@@ -241,8 +249,8 @@ PressBuf press;
 bool validPress(float p) {
 
   return isfinite(p) &&
-         p >= 300 &&
-         p <= 1100;
+         p >= 300.0f &&
+         p <= 1100.0f;
 }
 
 void bleSend(const String& s) {
@@ -294,8 +302,7 @@ bool getPressure(
       );
   }
 
-  p =
-    s.toFloat();
+  p = s.toFloat();
 
   return validPress(p);
 }
@@ -327,12 +334,15 @@ bool getRelayRSSI(
       );
   }
 
-  r =
-    s.toInt();
+  r = s.toInt();
 
   return r <= -10 &&
          r >= -140;
 }
+
+// =====================================================
+// RSSI → 거리
+// =====================================================
 
 float rssiDistance(int rssi) {
 
@@ -372,6 +382,10 @@ float getWeight(RssiBuf& b) {
   return w;
 }
 
+// =====================================================
+// 기압 → 상대 높이
+// =====================================================
+
 float pressureHeight(
   float current,
   float reference
@@ -397,6 +411,7 @@ void processPacket(
   int directRSSI
 ) {
 
+  // TARGET 직접 수신 = A RSSI
   if (
     msg.startsWith(
       "TARGET:PING"
@@ -420,14 +435,16 @@ void processPacket(
     }
 
     Serial.printf(
-      "[TARGET] RSSI=%d PRESS=%.2f\n",
+      "[TARGET] RSSI=%d PRESS=%.2f SAMPLE=%d/30\n",
       directRSSI,
-      press.median()
+      press.median(),
+      press.count
     );
 
     return;
   }
 
+  // Anchor2가 측정한 Target RSSI
   if (
     msg.startsWith(
       "ANCHOR2:"
@@ -454,6 +471,7 @@ void processPacket(
     return;
   }
 
+  // Anchor3가 측정한 Target RSSI
   if (
     msg.startsWith(
       "ANCHOR3:"
@@ -510,8 +528,9 @@ bool solveWLS(
     CY
   };
 
-  x = 40.0f;
-  y = 23.0f;
+  // 고정 앵커 삼각형 중심 부근에서 시작
+  x = 9.4444f;
+  y = 4.9690f;
 
   for (
     int iter = 0;
@@ -519,12 +538,12 @@ bool solveWLS(
     iter++
   ) {
 
-    float h00 = 0;
-    float h01 = 0;
-    float h11 = 0;
+    float h00 = 0.0f;
+    float h01 = 0.0f;
+    float h11 = 0.0f;
 
-    float g0 = 0;
-    float g1 = 0;
+    float g0 = 0.0f;
+    float g1 = 0.0f;
 
     for (
       int i = 0;
@@ -670,11 +689,11 @@ bool solveWLS(
 void measure() {
 
   Serial.println();
-
   Serial.println(
     "===== MEASURE ====="
   );
 
+  // RSSI 5개씩 필요
   if (
     !rA.ready() ||
     !rB.ready() ||
@@ -697,6 +716,7 @@ void measure() {
     return;
   }
 
+  // 오래된 RSSI 거부
   if (
     !rA.alive() ||
     !rB.alive() ||
@@ -710,6 +730,7 @@ void measure() {
     return;
   }
 
+  // RSSI 중앙값
   int ma =
     rA.median();
 
@@ -719,7 +740,8 @@ void measure() {
   int mc =
     rC.median();
 
-  float d[3] = {
+  // RSSI 기반 3D 거리
+  float d3d[3] = {
 
     rssiDistance(ma),
 
@@ -728,6 +750,17 @@ void measure() {
     rssiDistance(mc)
   };
 
+  // 기본적으로 RSSI 거리 그대로 사용
+  float dxy[3] = {
+
+    d3d[0],
+
+    d3d[1],
+
+    d3d[2]
+  };
+
+  // WLS 가중치
   float w[3] = {
 
     getWeight(rA),
@@ -737,58 +770,161 @@ void measure() {
     getWeight(rC)
   };
 
-  float x;
-  float y;
-
-  if (
-    !solveWLS(
-      d,
-      w,
-      x,
-      y
-    )
-  ) {
-
-    bleSend(
-      "ERR:WLS"
-    );
-
-    return;
-  }
+  // ===================================================
+  // 기압 Z 보정
+  // ===================================================
 
   float z = 0.0f;
+
+  float dzA = 0.0f;
+  float dzB = 0.0f;
+  float dzC = 0.0f;
 
   int zMode = 0;
 
   float currentP =
     press.median();
 
+  bool basesReady =
+    validPress(baseA) &&
+    validPress(baseB) &&
+    validPress(baseC);
+
   if (
     press.fresh() &&
     validPress(currentP) &&
-    validPress(baseA)
+    basesReady
   ) {
 
-    z =
+    // Target과 각 Anchor의 높이 차이
+    dzA =
       pressureHeight(
         currentP,
         baseA
       );
 
-    // ===============================
-    // Z 데드밴드
-    // ±1.5m 미만은 센서 흔들림으로 보고 0 처리
-    // ===============================
+    dzB =
+      pressureHeight(
+        currentP,
+        baseB
+      );
+
+    dzC =
+      pressureHeight(
+        currentP,
+        baseC
+      );
+
+    // -----------------------------------------------
+    // 작은 Z 흔들림 제거
+    // ±1.5m 이하는 0m
+    // -----------------------------------------------
+
     if (
-      fabsf(z) <
+      fabsf(dzA) <
       1.5f
     ) {
-
-      z = 0.0f;
+      dzA = 0.0f;
     }
 
-    zMode = 1;
+    if (
+      fabsf(dzB) <
+      1.5f
+    ) {
+      dzB = 0.0f;
+    }
+
+    if (
+      fabsf(dzC) <
+      1.5f
+    ) {
+      dzC = 0.0f;
+    }
+
+    // -----------------------------------------------
+    // 3D RSSI 거리보다 높이차가 작을 때만
+    // 수평거리 보정 적용
+    // -----------------------------------------------
+
+    bool zValid =
+      fabsf(dzA) < d3d[0] &&
+      fabsf(dzB) < d3d[1] &&
+      fabsf(dzC) < d3d[2];
+
+    if (zValid) {
+
+      dxy[0] =
+        sqrtf(
+          d3d[0] * d3d[0] -
+          dzA * dzA
+        );
+
+      dxy[1] =
+        sqrtf(
+          d3d[1] * d3d[1] -
+          dzB * dzB
+        );
+
+      dxy[2] =
+        sqrtf(
+          d3d[2] * d3d[2] -
+          dzC * dzC
+        );
+
+      // 화면에 표시할 Z는
+      // Master(A)를 0m 기준으로 한 Target 상대높이
+      z = dzA;
+
+      zMode = 1;
+
+    } else {
+
+      // 기압값과 RSSI 거리가 물리적으로 맞지 않으면
+      // 위치 계산은 RSSI 거리만 사용
+      z = 0.0f;
+
+      zMode = 0;
+
+      Serial.println(
+        "[Z] CORRECTION OFF - DZ >= RSSI DIST"
+      );
+    }
   }
+
+  // ===================================================
+  // WLS 삼변측량
+  // ===================================================
+
+  float x;
+  float y;
+
+  if (
+    !solveWLS(
+      dxy,
+      w,
+      x,
+      y
+    )
+  ) {
+
+    String err =
+      "ERR:WLS,D:" +
+      String(dxy[0], 2) +
+      "," +
+      String(dxy[1], 2) +
+      "," +
+      String(dxy[2], 2);
+
+    Serial.println(err);
+
+    bleSend(err);
+
+    return;
+  }
+
+  // ===================================================
+  // SERIAL DEBUG
+  // ===================================================
 
   Serial.printf(
     "RSSI A=%d B=%d C=%d\n",
@@ -798,24 +934,49 @@ void measure() {
   );
 
   Serial.printf(
-    "DIST A=%.2f B=%.2f C=%.2f\n",
-    d[0],
-    d[1],
-    d[2]
+    "3D DIST A=%.2f B=%.2f C=%.2f\n",
+    d3d[0],
+    d3d[1],
+    d3d[2]
   );
 
   Serial.printf(
-    "PRESS CURRENT=%.2f BASE_A=%.2f\n",
-    currentP,
-    baseA
+    "DZ A=%.2f B=%.2f C=%.2f\n",
+    dzA,
+    dzB,
+    dzC
   );
 
   Serial.printf(
-    "RESULT X=%.2f Y=%.2f Z=%.2f\n",
+    "XY DIST A=%.2f B=%.2f C=%.2f\n",
+    dxy[0],
+    dxy[1],
+    dxy[2]
+  );
+
+  Serial.printf(
+    "PRESS CURRENT=%.2f\n",
+    currentP
+  );
+
+  Serial.printf(
+    "BASE A=%.2f B=%.2f C=%.2f\n",
+    baseA,
+    baseB,
+    baseC
+  );
+
+  Serial.printf(
+    "RESULT X=%.2f Y=%.2f Z=%.2f ZMODE=%d\n",
     x,
     y,
-    z
+    z,
+    zMode
   );
+
+  // ===================================================
+  // BLE 결과
+  // ===================================================
 
   String result =
     "RES:" +
@@ -825,15 +986,29 @@ void measure() {
     "," +
     String(z, 2) +
     "," +
-    String(d[0], 2) +
+    String(dxy[0], 2) +
     "," +
-    String(d[1], 2) +
+    String(dxy[1], 2) +
     "," +
-    String(d[2], 2) +
+    String(dxy[2], 2) +
     "," +
     String(zMode);
 
   bleSend(result);
+
+  // Z 상세정보도 HTML로 전송
+  if (zMode) {
+
+    String dzMsg =
+      "DZ:" +
+      String(dzA, 2) +
+      "," +
+      String(dzB, 2) +
+      "," +
+      String(dzC, 2);
+
+    bleSend(dzMsg);
+  }
 
   Serial.println(
     "==================="
@@ -841,7 +1016,7 @@ void measure() {
 }
 
 // =====================================================
-// 기준기압 / RSSI 모델
+// 설정 불러오기
 // =====================================================
 
 void loadSettings() {
@@ -880,7 +1055,24 @@ void loadSettings() {
       "baseC",
       NAN
     );
+
+  Serial.printf(
+    "[LOAD] MODEL A=%.2f N=%.3f\n",
+    modelA,
+    modelN
+  );
+
+  Serial.printf(
+    "[LOAD] BASE A=%.2f B=%.2f C=%.2f\n",
+    baseA,
+    baseB,
+    baseC
+  );
 }
+
+// =====================================================
+// 기준기압
+// =====================================================
 
 void sendBase() {
 
@@ -912,17 +1104,20 @@ void sendBase() {
 
 void saveBase(char node) {
 
-  // ===============================
-  // 기존 5개 → 최소 20개
-  // ===============================
+  // 최소 20개 기압 샘플 필요
   if (
     !press.fresh() ||
     press.count < 20
   ) {
 
-    bleSend(
-      "ERR:PRESS_SAMPLE"
-    );
+    String err =
+      "ERR:PRESS_SAMPLE," +
+      String(press.count) +
+      "/20";
+
+    bleSend(err);
+
+    Serial.println(err);
 
     return;
   }
@@ -953,7 +1148,7 @@ void saveBase(char node) {
     );
   }
 
-  if (
+  else if (
     node == 'B'
   ) {
 
@@ -965,7 +1160,7 @@ void saveBase(char node) {
     );
   }
 
-  if (
+  else if (
     node == 'C'
   ) {
 
@@ -983,7 +1178,17 @@ void saveBase(char node) {
     "," +
     String(p, 2)
   );
+
+  Serial.printf(
+    "[CAL] %c = %.2f hPa\n",
+    node,
+    p
+  );
 }
+
+// =====================================================
+// RSSI 모델
+// =====================================================
 
 void sendModel() {
 
@@ -1118,37 +1323,49 @@ class CommandCB :
 
       measure();
 
-    } else if (
+    }
+
+    else if (
       cmd == "GETBASE"
     ) {
 
       sendBase();
 
-    } else if (
+    }
+
+    else if (
       cmd == "CAL:A"
     ) {
 
       saveBase('A');
 
-    } else if (
+    }
+
+    else if (
       cmd == "CAL:B"
     ) {
 
       saveBase('B');
 
-    } else if (
+    }
+
+    else if (
       cmd == "CAL:C"
     ) {
 
       saveBase('C');
 
-    } else if (
+    }
+
+    else if (
       cmd == "GETMODEL"
     ) {
 
       sendModel();
 
-    } else if (
+    }
+
+    else if (
       cmd.startsWith(
         "SETMODEL:"
       )
@@ -1158,7 +1375,9 @@ class CommandCB :
         cmd.substring(9)
       );
 
-    } else {
+    }
+
+    else {
 
       bleSend(
         "ERR:CMD"
@@ -1199,21 +1418,15 @@ void sendStatus() {
   String s =
     "STAT:" +
     String(
-      rA.alive()
-        ? 1
-        : 0
+      rA.alive() ? 1 : 0
     ) +
     "," +
     String(
-      rB.alive()
-        ? 1
-        : 0
+      rB.alive() ? 1 : 0
     ) +
     "," +
     String(
-      rC.alive()
-        ? 1
-        : 0
+      rC.alive() ? 1 : 0
     ) +
     "," +
     String(
@@ -1342,7 +1555,9 @@ void initBLE() {
   BLECharacteristic* cmd =
     service->createCharacteristic(
       CHAR_CMD_UUID,
-      BLECharacteristic::PROPERTY_WRITE
+
+      BLECharacteristic::PROPERTY_WRITE |
+      BLECharacteristic::PROPERTY_WRITE_NR
     );
 
   cmd->setCallbacks(
@@ -1352,6 +1567,7 @@ void initBLE() {
   dataChar =
     service->createCharacteristic(
       CHAR_DATA_UUID,
+
       BLECharacteristic::PROPERTY_READ |
       BLECharacteristic::PROPERTY_NOTIFY
     );
@@ -1391,7 +1607,7 @@ void setup() {
   Serial.println();
 
   Serial.println(
-    "=== SANJIGI MASTER ==="
+    "=== SANJIGI MASTER / FIXED 15-20-15 / PRESS30 ==="
   );
 
   loadSettings();
@@ -1440,7 +1656,9 @@ void loop() {
         rssi
       );
 
-    } else if (
+    }
+
+    else if (
       state ==
       RADIOLIB_ERR_CRC_MISMATCH
     ) {
@@ -1449,7 +1667,9 @@ void loop() {
         "[RX] CRC ERROR"
       );
 
-    } else {
+    }
+
+    else {
 
       Serial.printf(
         "[RX] ERROR %d\n",
