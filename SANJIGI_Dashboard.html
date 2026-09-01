@@ -232,14 +232,41 @@ async function ensureConnected(){
 
 async function doGattWrite(cmd){
   const data=new TextEncoder().encode(cmd);
+  let lastErr=null;
 
+  // 1) 응답형 쓰기 시도
   if(typeof cmdChar.writeValueWithResponse==='function'){
-    await cmdChar.writeValueWithResponse(data);
-  }else if(typeof cmdChar.writeValue==='function'){
-    await cmdChar.writeValue(data);
-  }else{
-    await cmdChar.writeValueWithoutResponse(data);
+    try{
+      await cmdChar.writeValueWithResponse(data);
+      return;
+    }catch(e){
+      lastErr=e;
+      log('writeWithResponse 미지원/실패 → 다른 방식 재시도');
+    }
   }
+
+  // 2) 무응답형 쓰기 시도
+  if(typeof cmdChar.writeValueWithoutResponse==='function'){
+    try{
+      await cmdChar.writeValueWithoutResponse(data);
+      return;
+    }catch(e){
+      lastErr=e;
+      log('writeWithoutResponse 미지원/실패 → 일반 write 재시도');
+    }
+  }
+
+  // 3) 구형/일반 writeValue 시도
+  if(typeof cmdChar.writeValue==='function'){
+    try{
+      await cmdChar.writeValue(data);
+      return;
+    }catch(e){
+      lastErr=e;
+    }
+  }
+
+  throw lastErr || new Error('지원되는 BLE write 방식이 없음');
 }
 
 async function writeGattCommand(cmd){
