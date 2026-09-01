@@ -147,31 +147,44 @@ const SERVICE_UUID="4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHAR_CMD_UUID="beb5483e-36e1-4688-b7f5-ea07361b26a8";
 const CHAR_DATA_UUID="a3c17822-1d5b-4176-a447-0624916a0487";
 let cmdChar=null;
+let gattQueue=Promise.resolve();
 
 function log(msg){const b=document.getElementById('log');b.innerHTML+='<br>> '+msg;b.scrollTop=b.scrollHeight;}
-async function sendCmd(cmd){
-  if(!cmdChar){log('<span style="color:red">BLE 명령 채널이 연결되지 않았습니다.</span>');return false;}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+async function writeGattCommand(cmd){
+  if(!cmdChar){
+    log('<span style="color:red">BLE 명령 채널이 연결되지 않았습니다.</span>');
+    return false;
+  }
+
   const data=new TextEncoder().encode(cmd);
+
   try{
-    // ESP32 WRITE characteristic에는 응답형 쓰기를 우선 사용한다.
+    // 한 번에 하나의 GATT write만 실행한다.
     if(typeof cmdChar.writeValueWithResponse==='function'){
       await cmdChar.writeValueWithResponse(data);
     }else{
       await cmdChar.writeValue(data);
     }
+
     log('전송 성공: '+cmd);
+    // ESP32 BLE 스택이 다음 GATT 작업을 정리할 시간을 약간 준다.
+    await sleep(80);
     return true;
   }catch(e){
-    // 브라우저/스택에 따라 응답형 쓰기가 실패하면 일반 write로 한 번 재시도한다.
-    try{
-      await cmdChar.writeValue(data);
-      log('전송 성공(재시도): '+cmd);
-      return true;
-    }catch(e2){
-      log('<span style="color:red">전송 실패: '+cmd+' / '+e2+'</span>');
-      return false;
-    }
+    log('<span style="color:red">전송 실패: '+cmd+' / '+e+'</span>');
+    await sleep(120);
+    return false;
   }
+}
+
+function sendCmd(cmd){
+  // 모든 BLE write를 직렬 큐에 넣는다.
+  const task=gattQueue.then(()=>writeGattCommand(cmd));
+  // 한 명령이 실패해도 다음 명령 큐가 계속 동작하도록 한다.
+  gattQueue=task.catch(()=>false);
+  return task;
 }
 function setEnabled(v){['measureBtn','calA','calB','calC','getBase','saveModel','getModel','saveDist','getDist'].forEach(id=>document.getElementById(id).disabled=!v);}
 
@@ -182,6 +195,7 @@ document.getElementById('connectBtn').onclick=async()=>{
     const server=await device.gatt.connect();
     const service=await server.getPrimaryService(SERVICE_UUID);
     cmdChar=await service.getCharacteristic(CHAR_CMD_UUID);
+    gattQueue=Promise.resolve();
     const dataChar=await service.getCharacteristic(CHAR_DATA_UUID);
     await dataChar.startNotifications();
     dataChar.addEventListener('characteristicvaluechanged',handleDataNotify);
