@@ -736,7 +736,8 @@ void initBLE() {
 
   BLECharacteristic* pCmdChar = pService->createCharacteristic(
     CHAR_CMD_UUID,
-    BLECharacteristic::PROPERTY_WRITE
+    BLECharacteristic::PROPERTY_WRITE |
+    BLECharacteristic::PROPERTY_WRITE_NR
   );
   pCmdChar->setCallbacks(new CommandCallbacks());
 
