@@ -146,7 +146,6 @@
 const SERVICE_UUID="4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHAR_CMD_UUID="beb5483e-36e1-4688-b7f5-ea07361b26a8";
 const CHAR_DATA_UUID="a3c17822-1d5b-4176-a447-0624916a0487";
-let cmdChar=null;
 let gattQueue=Promise.resolve();
 let bleDevice=null;
 let bleServer=null;
@@ -232,41 +231,27 @@ async function ensureConnected(){
 
 async function doGattWrite(cmd){
   const data=new TextEncoder().encode(cmd);
-  let lastErr=null;
 
-  // 1) 응답형 쓰기 시도
-  if(typeof cmdChar.writeValueWithResponse==='function'){
-    try{
-      await cmdChar.writeValueWithResponse(data);
-      return;
-    }catch(e){
-      lastErr=e;
-      log('writeWithResponse 미지원/실패 → 다른 방식 재시도');
-    }
+  // characteristic가 실제로 지원한다고 광고한 방식만 사용한다.
+  // Master는 WRITE + WRITE_NR 둘 다 제공하지만 브라우저별 구현 차이를 피한다.
+  const p=cmdChar.properties || {};
+
+  if(p.write && typeof cmdChar.writeValueWithResponse==='function'){
+    await cmdChar.writeValueWithResponse(data);
+    return;
   }
 
-  // 2) 무응답형 쓰기 시도
-  if(typeof cmdChar.writeValueWithoutResponse==='function'){
-    try{
-      await cmdChar.writeValueWithoutResponse(data);
-      return;
-    }catch(e){
-      lastErr=e;
-      log('writeWithoutResponse 미지원/실패 → 일반 write 재시도');
-    }
+  if(p.writeWithoutResponse && typeof cmdChar.writeValueWithoutResponse==='function'){
+    await cmdChar.writeValueWithoutResponse(data);
+    return;
   }
 
-  // 3) 구형/일반 writeValue 시도
   if(typeof cmdChar.writeValue==='function'){
-    try{
-      await cmdChar.writeValue(data);
-      return;
-    }catch(e){
-      lastErr=e;
-    }
+    await cmdChar.writeValue(data);
+    return;
   }
 
-  throw lastErr || new Error('지원되는 BLE write 방식이 없음');
+  throw new Error('지원되는 BLE write 방식이 없음');
 }
 
 async function writeGattCommand(cmd){
@@ -337,9 +322,9 @@ document.getElementById('connectBtn').onclick=async()=>{
     log('마스터 연결 성공');
 
     await sendCmd('GETDIST');
-    await sleep(180);
+    await sleep(300);
     await sendCmd('GETBASE');
-    await sleep(180);
+    await sleep(300);
     await sendCmd('GETMODEL');
 
   }catch(e){

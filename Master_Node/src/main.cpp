@@ -56,6 +56,8 @@ float distBC = NAN;  // Anchor2(B) <-> Anchor3(C)
 
 BLECharacteristic* pDataChar = nullptr;
 bool deviceConnected = false;
+volatile bool restartAdvertising = false;
+unsigned long bleDisconnectedAt = 0;
 
 // ---------- NVS ----------
 Preferences prefs;
@@ -579,11 +581,15 @@ void runSnapshot() {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
     deviceConnected = true;
+    restartAdvertising = false;
+    Serial.println("[BLE] Client connected");
   }
 
   void onDisconnect(BLEServer*) override {
     deviceConnected = false;
-    BLEDevice::startAdvertising();
+    bleDisconnectedAt = millis();
+    restartAdvertising = true;
+    Serial.println("[BLE] Client disconnected");
   }
 };
 
@@ -689,7 +695,7 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
 unsigned long lastStatus = 0;
 
 void sendStatus() {
-  if (millis() - lastStatus < 1000) return;
+  if (millis() - lastStatus < 2000) return;
   lastStatus = millis();
 
   float p = pressureBuf.median();
@@ -813,6 +819,15 @@ void loop() {
     if (rxState != RADIOLIB_ERR_NONE) {
       Serial.printf("[LORA] restart RX FAIL code=%d\n", rxState);
     }
+  }
+
+  // Disconnect callback 안에서 즉시 advertising을 재시작하지 않고
+  // BLE 스택이 정리될 시간을 준 뒤 재시작한다.
+  if (restartAdvertising && !deviceConnected &&
+      millis() - bleDisconnectedAt >= 500) {
+    restartAdvertising = false;
+    BLEDevice::startAdvertising();
+    Serial.println("[BLE] Advertising restarted");
   }
 
   sendStatus();
