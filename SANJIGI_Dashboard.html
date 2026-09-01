@@ -109,6 +109,8 @@
       <div class="box">Z (A 대비)<br><span id="valZ" class="big">-</span> m</div>
     </div>
     <div style="text-align:center;margin-top:10px;font-size:14px;">거리: d1=<span id="valD1">-</span>m | d2=<span id="valD2">-</span>m | d3=<span id="valD3">-</span>m | Z보정=<span id="zMode">-</span></div>
+    <div id="zReason" style="text-align:center;margin-top:8px;font-size:14px;font-weight:700;">Z 보정 상태: -</div>
+    <div id="zDetail" style="text-align:center;margin-top:4px;font-size:13px;">높이차 A/B/C: -</div>
   </div>
 
   <div class="section">
@@ -265,6 +267,31 @@ function handleDataNotify(event){
     document.getElementById('valD1').innerText=p[3]; document.getElementById('valD2').innerText=p[4]; document.getElementById('valD3').innerText=p[5];
     document.getElementById('zMode').innerText=(p[6]==='1'?'ON':'OFF');
     log(`위치 계산 완료 X=${p[0]}, Y=${p[1]}, Z=${p[2]}`);
+  }else if(value.startsWith('ZSTAT:')){
+    const p=value.substring(6).split(',');
+    const on=(p[0]==='ON');
+    const reason=p[1]||'';
+    document.getElementById('zMode').innerText=on?'ON':'OFF';
+
+    const reasonMap={
+      'OK':'정상 - 기압 높이 보정 적용 중',
+      'PRESS_STALE':'현재 Target 기압값이 오래되어 보정하지 않음',
+      'PRESS_INVALID':'현재 Target 기압값이 정상 범위가 아님',
+      'BASE_NOT_SET':'A/B/C 기준기압이 모두 등록되지 않음',
+      'DZ_INVALID_A':'A 높이차 계산값이 비정상',
+      'DZ_INVALID_B':'B 높이차 계산값이 비정상',
+      'DZ_INVALID_C':'C 높이차 계산값이 비정상',
+      'DZ_GE_DIST_A':'A 높이차가 RSSI 거리보다 크거나 같음',
+      'DZ_GE_DIST_B':'B 높이차가 RSSI 거리보다 크거나 같음',
+      'DZ_GE_DIST_C':'C 높이차가 RSSI 거리보다 크거나 같음'
+    };
+    const msg=reasonMap[reason]||('원인: '+reason);
+    const el=document.getElementById('zReason');
+    el.innerText='Z 보정 '+(on?'ON':'OFF')+' - '+msg;
+    el.style.color=on?'#15803d':'#b45309';
+  }else if(value.startsWith('DZ:')){
+    const p=value.substring(3).split(',');
+    document.getElementById('zDetail').innerText=`높이차 A=${p[0]}m / B=${p[1]}m / C=${p[2]}m`;
   }else if(value.startsWith('WARN:')){
     log('<span class="warn">'+value+'</span>');
   }else if(value.startsWith('ERR:')){

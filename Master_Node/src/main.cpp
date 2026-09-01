@@ -496,10 +496,17 @@ void runSnapshot() {
   float dz[3] = {NAN, NAN, NAN};
 
   bool zCorrection = false;
+  String zReason = "UNKNOWN";
   float currentPress = pressureBuf.median();
 
-  // ===== 기존 기압 상대고도 보정 로직 그대로 =====
-  if (pressureBuf.fresh() && validPressure(currentPress) && allBasesReady()) {
+  // ===== 기존 기압 상대고도 보정 로직 유지 + OFF 원인 기록 =====
+  if (!pressureBuf.fresh()) {
+    zReason = "PRESS_STALE";
+  } else if (!validPressure(currentPress)) {
+    zReason = "PRESS_INVALID";
+  } else if (!allBasesReady()) {
+    zReason = "BASE_NOT_SET";
+  } else {
     dz[0] = relativeHeightMeters(currentPress, basePressA);
     dz[1] = relativeHeightMeters(currentPress, basePressB);
     dz[2] = relativeHeightMeters(currentPress, basePressC);
@@ -507,7 +514,13 @@ void runSnapshot() {
     bool geometryOK = true;
 
     for (int i = 0; i < 3; i++) {
-      if (!isfinite(dz[i]) || fabsf(dz[i]) >= d3d[i]) {
+      if (!isfinite(dz[i])) {
+        zReason = String("DZ_INVALID_") + char('A' + i);
+        geometryOK = false;
+        break;
+      }
+      if (fabsf(dz[i]) >= d3d[i]) {
+        zReason = String("DZ_GE_DIST_") + char('A' + i);
         geometryOK = false;
         break;
       }
@@ -519,6 +532,7 @@ void runSnapshot() {
         dxy[i] = sqrtf(max(sq, 0.25f));
       }
       zCorrection = true;
+      zReason = "OK";
     }
   }
 
@@ -549,10 +563,12 @@ void runSnapshot() {
   sendBle(res);
 
   if (zCorrection) {
+    sendBle("ZSTAT:ON,OK");
     sendBle("DZ:" + String(dz[0], 2) + "," +
                     String(dz[1], 2) + "," +
                     String(dz[2], 2));
   } else {
+    sendBle("ZSTAT:OFF," + zReason);
     sendBle("WARN:ZCORR_OFF");
   }
 }
