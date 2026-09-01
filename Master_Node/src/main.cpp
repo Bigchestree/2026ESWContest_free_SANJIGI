@@ -1553,12 +1553,10 @@ void initBLE() {
     );
 
   BLECharacteristic* cmd =
-    service->createCharacteristic(
-      CHAR_CMD_UUID,
-
-      BLECharacteristic::PROPERTY_WRITE |
-      BLECharacteristic::PROPERTY_WRITE_NR
-    );
+  service->createCharacteristic(
+    CHAR_CMD_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
 
   cmd->setCallbacks(
     new CommandCB()
