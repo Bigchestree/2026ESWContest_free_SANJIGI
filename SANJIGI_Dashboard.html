@@ -148,67 +148,177 @@ const CHAR_CMD_UUID="beb5483e-36e1-4688-b7f5-ea07361b26a8";
 const CHAR_DATA_UUID="a3c17822-1d5b-4176-a447-0624916a0487";
 let cmdChar=null;
 let gattQueue=Promise.resolve();
+let bleDevice=null;
+let bleServer=null;
+let bleService=null;
+let cmdChar=null;
+let dataChar=null;
+let reconnectPromise=null;
 
-function log(msg){const b=document.getElementById('log');b.innerHTML+='<br>> '+msg;b.scrollTop=b.scrollHeight;}
+function log(msg){
+  const b=document.getElementById('log');
+  b.innerHTML+='<br>> '+msg;
+  b.scrollTop=b.scrollHeight;
+}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 
+function setConnectedUI(connected){
+  const btn=document.getElementById('connectBtn');
+  if(connected){
+    btn.innerText='✅ 연결됨';
+    btn.disabled=true;
+    setEnabled(true);
+  }else{
+    btn.innerText='🔵 블루투스 연결';
+    btn.disabled=false;
+    setEnabled(false);
+  }
+}
+
+function onGattDisconnected(){
+  cmdChar=null;
+  dataChar=null;
+  bleServer=null;
+  bleService=null;
+  setConnectedUI(false);
+  log('<span style="color:#c62828">BLE 연결 끊김 감지</span>');
+}
+
+async function acquireCharacteristics(){
+  if(!bleDevice) throw new Error('BLE device 없음');
+
+  if(!bleDevice.gatt.connected){
+    bleServer=await bleDevice.gatt.connect();
+  }else{
+    bleServer=bleDevice.gatt;
+  }
+
+  bleService=await bleServer.getPrimaryService(SERVICE_UUID);
+  cmdChar=await bleService.getCharacteristic(CHAR_CMD_UUID);
+  dataChar=await bleService.getCharacteristic(CHAR_DATA_UUID);
+
+  await dataChar.startNotifications();
+  dataChar.removeEventListener('characteristicvaluechanged',handleDataNotify);
+  dataChar.addEventListener('characteristicvaluechanged',handleDataNotify);
+
+  setConnectedUI(true);
+  return true;
+}
+
+async function ensureConnected(){
+  if(bleDevice && bleDevice.gatt && bleDevice.gatt.connected && cmdChar){
+    return true;
+  }
+
+  if(reconnectPromise) return reconnectPromise;
+
+  reconnectPromise=(async()=>{
+    try{
+      log('BLE 재연결 시도...');
+      await acquireCharacteristics();
+      log('BLE 재연결 성공');
+      return true;
+    }catch(e){
+      log('<span style="color:red">BLE 재연결 실패: '+e+'</span>');
+      setConnectedUI(false);
+      return false;
+    }finally{
+      reconnectPromise=null;
+    }
+  })();
+
+  return reconnectPromise;
+}
+
+async function doGattWrite(cmd){
+  const data=new TextEncoder().encode(cmd);
+
+  if(typeof cmdChar.writeValueWithResponse==='function'){
+    await cmdChar.writeValueWithResponse(data);
+  }else if(typeof cmdChar.writeValue==='function'){
+    await cmdChar.writeValue(data);
+  }else{
+    await cmdChar.writeValueWithoutResponse(data);
+  }
+}
+
 async function writeGattCommand(cmd){
-  if(!cmdChar){
-    log('<span style="color:red">BLE 명령 채널이 연결되지 않았습니다.</span>');
+  let ok=await ensureConnected();
+  if(!ok){
+    log('<span style="color:red">전송 실패: '+cmd+' / BLE 연결 없음</span>');
     return false;
   }
 
-  const data=new TextEncoder().encode(cmd);
-
   try{
-    // 한 번에 하나의 GATT write만 실행한다.
-    if(typeof cmdChar.writeValueWithResponse==='function'){
-      await cmdChar.writeValueWithResponse(data);
-    }else{
-      await cmdChar.writeValue(data);
-    }
-
+    await doGattWrite(cmd);
     log('전송 성공: '+cmd);
-    // ESP32 BLE 스택이 다음 GATT 작업을 정리할 시간을 약간 준다.
-    await sleep(80);
+    await sleep(100);
     return true;
   }catch(e){
-    log('<span style="color:red">전송 실패: '+cmd+' / '+e+'</span>');
-    await sleep(120);
-    return false;
+    log('<span style="color:#e65100">1차 전송 실패: '+cmd+' / '+e+'</span>');
+
+    // 연결이 끊겼거나 characteristic이 무효화된 경우 재획득 후 한 번만 재시도
+    cmdChar=null;
+    dataChar=null;
+    await sleep(180);
+
+    ok=await ensureConnected();
+    if(!ok){
+      log('<span style="color:red">재시도 실패: '+cmd+' / BLE 재연결 실패</span>');
+      return false;
+    }
+
+    try{
+      await doGattWrite(cmd);
+      log('재연결 후 전송 성공: '+cmd);
+      await sleep(100);
+      return true;
+    }catch(e2){
+      log('<span style="color:red">재시도 실패: '+cmd+' / '+e2+'</span>');
+      return false;
+    }
   }
 }
 
 function sendCmd(cmd){
-  // 모든 BLE write를 직렬 큐에 넣는다.
   const task=gattQueue.then(()=>writeGattCommand(cmd));
-  // 한 명령이 실패해도 다음 명령 큐가 계속 동작하도록 한다.
   gattQueue=task.catch(()=>false);
   return task;
 }
-function setEnabled(v){['measureBtn','calA','calB','calC','getBase','saveModel','getModel','saveDist','getDist'].forEach(id=>document.getElementById(id).disabled=!v);}
+
+function setEnabled(v){
+  ['measureBtn','calA','calB','calC','getBase','saveModel','getModel','saveDist','getDist']
+    .forEach(id=>document.getElementById(id).disabled=!v);
+}
 
 document.getElementById('connectBtn').onclick=async()=>{
   try{
     log('블루투스 기기 검색 중...');
-    const device=await navigator.bluetooth.requestDevice({filters:[{name:'Master_Rescue_Node'}],optionalServices:[SERVICE_UUID]});
-    const server=await device.gatt.connect();
-    const service=await server.getPrimaryService(SERVICE_UUID);
-    cmdChar=await service.getCharacteristic(CHAR_CMD_UUID);
+
+    bleDevice=await navigator.bluetooth.requestDevice({
+      filters:[{name:'Master_Rescue_Node'}],
+      optionalServices:[SERVICE_UUID]
+    });
+
+    // 실제 연결이 끊기면 UI도 즉시 연결 해제로 바꾼다.
+    bleDevice.removeEventListener('gattserverdisconnected',onGattDisconnected);
+    bleDevice.addEventListener('gattserverdisconnected',onGattDisconnected);
+
+    await acquireCharacteristics();
     gattQueue=Promise.resolve();
-    const dataChar=await service.getCharacteristic(CHAR_DATA_UUID);
-    await dataChar.startNotifications();
-    dataChar.addEventListener('characteristicvaluechanged',handleDataNotify);
-    document.getElementById('connectBtn').innerText='✅ 연결됨';
-    document.getElementById('connectBtn').disabled=true;
-    setEnabled(true);
+
     log('마스터 연결 성공');
+
     await sendCmd('GETDIST');
-    await new Promise(r=>setTimeout(r,120));
+    await sleep(180);
     await sendCmd('GETBASE');
-    await new Promise(r=>setTimeout(r,120));
+    await sleep(180);
     await sendCmd('GETMODEL');
-  }catch(e){log('연결 실패: '+e);}
+
+  }catch(e){
+    setConnectedUI(false);
+    log('<span style="color:red">연결 실패: '+e+'</span>');
+  }
 };
 
 document.getElementById('saveDist').onclick=()=>{
