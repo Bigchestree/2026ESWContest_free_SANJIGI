@@ -547,8 +547,13 @@ void runSnapshot() {
   float x = 0, y = 0;
 
   if (!solveWLS(dxy, weights, x, y)) {
-    sendBle("ERR:WLS");
-    return;
+  sendBle(
+    "ERR:WLS,D:" +
+    String(dxy[0], 2) + "," +
+    String(dxy[1], 2) + "," +
+    String(dxy[2], 2)
+  );
+  return;
   }
 
   float zRelA = (zCorrection && isfinite(dz[0])) ? dz[0] : NAN;
