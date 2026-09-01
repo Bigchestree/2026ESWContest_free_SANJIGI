@@ -15,7 +15,6 @@
     .btn { padding:12px 20px; font-size:15px; font-weight:700; border:0; border-radius:7px; cursor:pointer; margin:6px; }
     .btn:disabled { background:#bdc3c7 !important; cursor:not-allowed; }
     .btn-connect { background:#3498db; color:#fff; }
-    .btn-save { background:#e67e22; color:#fff; }
     .btn-cal { background:#8e44ad; color:#fff; }
     .btn-measure { background:#2ecc71; color:#fff; }
     .btn-gray { background:#7f8c8d; color:#fff; }
@@ -23,7 +22,7 @@
     .node-card { flex:1; padding:14px; border-radius:8px; background:#fff; border:1px solid #ddd; text-align:center; }
     .badge { display:inline-block; padding:6px 11px; font-size:13px; font-weight:700; border-radius:20px; color:#fff; margin-top:8px; }
     .bg-off { background:#e74c3c; } .bg-on { background:#2ecc71; }
-    .pressure-grid,.result-grid,.distance-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+    .pressure-grid,.result-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
     .box { background:#fff; border:1px solid #ddd; padding:14px; border-radius:8px; text-align:center; }
     .big { font-size:20px; font-weight:700; }
     .current-pressure { background:#fff3cd; border:1px solid #ffe69c; padding:12px; border-radius:8px; margin:12px 0; text-align:center; font-weight:700; }
@@ -34,10 +33,9 @@
     .field { flex:1; min-width:180px; }
     label { display:block; font-size:13px; color:#555; margin-bottom:5px; }
     input { width:100%; box-sizing:border-box; padding:10px; border:1px solid #bbb; border-radius:6px; font-size:15px; }
-    .log-box { font-size:13px; margin-top:18px; text-align:left; background:#222; color:#00ff66; padding:10px; border-radius:6px; height:120px; overflow-y:auto; font-family:monospace; }
+    .log-box { font-size:13px; margin-top:18px; text-align:left; background:#222; color:#00ff66; padding:10px; border-radius:6px; height:105px; overflow-y:auto; font-family:monospace; }
     .warn { color:#b65b00; font-weight:700; }
-    .saved { margin-top:10px; text-align:center; font-size:14px; font-weight:700; }
-    @media (max-width:700px) { .status-panel,.pressure-grid,.result-grid,.distance-grid { grid-template-columns:1fr; display:grid; } .container{padding:16px;} }
+    @media (max-width:700px) { .status-panel,.pressure-grid,.result-grid { grid-template-columns:1fr; display:grid; } .container{padding:16px;} }
   </style>
 </head>
 <body>
@@ -47,38 +45,9 @@
   <button id="connectBtn" class="btn btn-connect">① 마스터 블루투스 연결</button>
 
   <div class="section primary">
-    <h2>② 노드 사이 실제 거리 입력</h2>
+    <h2>② 현장 설치 — A/B/C 기준기압 등록</h2>
     <div class="guide">
-      현장에 A(마스터), B(앵커2), C(앵커3)를 설치한 뒤 실제 거리를 측정해 입력하세요.
-      세 거리로 마스터가 앵커 좌표를 자동 계산합니다.
-    </div>
-
-    <div class="distance-grid">
-      <div class="field">
-        <label>마스터 ↔ 앵커2 (AB, m)</label>
-        <input id="distAB" type="number" step="0.1" min="0.1" placeholder="예: 63.5">
-      </div>
-      <div class="field">
-        <label>마스터 ↔ 앵커3 (AC, m)</label>
-        <input id="distAC" type="number" step="0.1" min="0.1" placeholder="예: 71.2">
-      </div>
-      <div class="field">
-        <label>앵커2 ↔ 앵커3 (BC, m)</label>
-        <input id="distBC" type="number" step="0.1" min="0.1" placeholder="예: 58.7">
-      </div>
-    </div>
-
-    <div style="text-align:center">
-      <button id="saveDist" class="btn btn-save" disabled>노드 거리 저장</button>
-      <button id="getDist" class="btn btn-gray" disabled>저장 거리 확인</button>
-    </div>
-    <div id="distStatus" class="saved">저장된 거리: -</div>
-  </div>
-
-  <div class="section primary">
-    <h2>③ 현장 설치 — A/B/C 기준기압 등록</h2>
-    <div class="guide">
-      기존 기압 측정 방식 그대로입니다. Target을 각 앵커 바로 옆에 두고 기압값이 안정된 뒤 등록하세요.<br>
+      노드를 설치할 때마다 실행하는 단계입니다. Target을 각 앵커 바로 옆에 두고 기압값이 안정된 뒤 등록하세요.<br>
       같은 BMP280 하나로 A → B → C 순서로 측정합니다.
     </div>
 
@@ -99,8 +68,8 @@
   </div>
 
   <div class="section">
-    <h2>④ 위치 측정</h2>
-    <div class="guide">노드 거리와 A/B/C 기준기압 등록이 끝난 뒤 Target을 실제 위치로 옮기고 측정합니다. PRESS가 없으면 Z보정만 빠지고 RSSI+WLS는 계속 동작합니다.</div>
+    <h2>③ 위치 측정</h2>
+    <div class="guide">A/B/C 기준기압 등록이 끝난 뒤 Target을 실제 위치로 옮기고 측정합니다. PRESS가 없으면 Z보정만 빠지고 RSSI+WLS는 계속 동작합니다.</div>
     <div style="text-align:center"><button id="measureBtn" class="btn btn-measure" disabled>위치 측정 (MEASURE)</button></div>
 
     <div class="result-grid">
@@ -109,12 +78,10 @@
       <div class="box">Z (A 대비)<br><span id="valZ" class="big">-</span> m</div>
     </div>
     <div style="text-align:center;margin-top:10px;font-size:14px;">거리: d1=<span id="valD1">-</span>m | d2=<span id="valD2">-</span>m | d3=<span id="valD3">-</span>m | Z보정=<span id="zMode">-</span></div>
-    <div id="zReason" style="text-align:center;margin-top:8px;font-size:14px;font-weight:700;">Z 보정 상태: -</div>
-    <div id="zDetail" style="text-align:center;margin-top:4px;font-size:13px;">높이차 A/B/C: -</div>
   </div>
 
   <div class="section">
-    <h2>⑤ 노드 수신 상태</h2>
+    <h2>④ 노드 수신 상태</h2>
     <div class="status-panel">
       <div class="node-card"><b>Target / A</b><br><span id="nodeA" class="badge bg-off">대기</span><div id="rssiA">RSSI: -</div></div>
       <div class="node-card"><b>Anchor 2 / B</b><br><span id="nodeB" class="badge bg-off">대기</span><div id="rssiB">RSSI: -</div></div>
@@ -146,206 +113,30 @@
 const SERVICE_UUID="4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const CHAR_CMD_UUID="beb5483e-36e1-4688-b7f5-ea07361b26a8";
 const CHAR_DATA_UUID="a3c17822-1d5b-4176-a447-0624916a0487";
-let gattQueue=Promise.resolve();
-let bleDevice=null;
-let bleServer=null;
-let bleService=null;
 let cmdChar=null;
-let dataChar=null;
-let reconnectPromise=null;
 
-function log(msg){
-  const b=document.getElementById('log');
-  b.innerHTML+='<br>> '+msg;
-  b.scrollTop=b.scrollHeight;
-}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-
-function setConnectedUI(connected){
-  const btn=document.getElementById('connectBtn');
-  if(connected){
-    btn.innerText='✅ 연결됨';
-    btn.disabled=true;
-    setEnabled(true);
-  }else{
-    btn.innerText='🔵 블루투스 연결';
-    btn.disabled=false;
-    setEnabled(false);
-  }
-}
-
-function onGattDisconnected(){
-  cmdChar=null;
-  dataChar=null;
-  bleServer=null;
-  bleService=null;
-  setConnectedUI(false);
-  log('<span style="color:#c62828">BLE 연결 끊김 감지</span>');
-}
-
-async function acquireCharacteristics(){
-  if(!bleDevice) throw new Error('BLE device 없음');
-
-  if(!bleDevice.gatt.connected){
-    bleServer=await bleDevice.gatt.connect();
-  }else{
-    bleServer=bleDevice.gatt;
-  }
-
-  bleService=await bleServer.getPrimaryService(SERVICE_UUID);
-  cmdChar=await bleService.getCharacteristic(CHAR_CMD_UUID);
-  dataChar=await bleService.getCharacteristic(CHAR_DATA_UUID);
-
-  await dataChar.startNotifications();
-  dataChar.removeEventListener('characteristicvaluechanged',handleDataNotify);
-  dataChar.addEventListener('characteristicvaluechanged',handleDataNotify);
-
-  setConnectedUI(true);
-  return true;
-}
-
-async function ensureConnected(){
-  if(bleDevice && bleDevice.gatt && bleDevice.gatt.connected && cmdChar){
-    return true;
-  }
-
-  if(reconnectPromise) return reconnectPromise;
-
-  reconnectPromise=(async()=>{
-    try{
-      log('BLE 재연결 시도...');
-      await acquireCharacteristics();
-      log('BLE 재연결 성공');
-      return true;
-    }catch(e){
-      log('<span style="color:red">BLE 재연결 실패: '+e+'</span>');
-      setConnectedUI(false);
-      return false;
-    }finally{
-      reconnectPromise=null;
-    }
-  })();
-
-  return reconnectPromise;
-}
-
-async function doGattWrite(cmd){
-  const data=new TextEncoder().encode(cmd);
-
-  // Master는 WRITE_NR도 지원하므로 Chrome에서 불안정한
-  // writeValueWithResponse는 사용하지 않는다.
-  if(typeof cmdChar.writeValueWithoutResponse==='function'){
-    await cmdChar.writeValueWithoutResponse(data);
-    return;
-  }
-
-  // 구형 브라우저 fallback
-  if(typeof cmdChar.writeValue==='function'){
-    await cmdChar.writeValue(data);
-    return;
-  }
-
-  throw new Error('지원되는 BLE write 방식이 없음');
-}
-
-async function writeGattCommand(cmd){
-  let ok=await ensureConnected();
-  if(!ok){
-    log('<span style="color:red">전송 실패: '+cmd+' / BLE 연결 없음</span>');
-    return false;
-  }
-
-  try{
-    await doGattWrite(cmd);
-    log('전송 성공: '+cmd);
-    await sleep(100);
-    return true;
-  }catch(e){
-    log('<span style="color:#e65100">1차 전송 실패: '+cmd+' / '+e+'</span>');
-
-    // 연결이 끊겼거나 characteristic이 무효화된 경우 재획득 후 한 번만 재시도
-    cmdChar=null;
-    dataChar=null;
-    await sleep(180);
-
-    ok=await ensureConnected();
-    if(!ok){
-      log('<span style="color:red">재시도 실패: '+cmd+' / BLE 재연결 실패</span>');
-      return false;
-    }
-
-    try{
-      await doGattWrite(cmd);
-      log('재연결 후 전송 성공: '+cmd);
-      await sleep(100);
-      return true;
-    }catch(e2){
-      log('<span style="color:red">재시도 실패: '+cmd+' / '+e2+'</span>');
-      return false;
-    }
-  }
-}
-
-function sendCmd(cmd){
-  const task=gattQueue.then(()=>writeGattCommand(cmd));
-  gattQueue=task.catch(()=>false);
-  return task;
-}
-
-function setEnabled(v){
-  ['measureBtn','calA','calB','calC','getBase','saveModel','getModel','saveDist','getDist']
-    .forEach(id=>document.getElementById(id).disabled=!v);
-}
+function log(msg){const b=document.getElementById('log');b.innerHTML+='<br>> '+msg;b.scrollTop=b.scrollHeight;}
+async function sendCmd(cmd){if(!cmdChar)return;await cmdChar.writeValue(new TextEncoder().encode(cmd));log('전송: '+cmd);}
+function setEnabled(v){['measureBtn','calA','calB','calC','getBase','saveModel','getModel'].forEach(id=>document.getElementById(id).disabled=!v);}
 
 document.getElementById('connectBtn').onclick=async()=>{
   try{
     log('블루투스 기기 검색 중...');
-
-    bleDevice=await navigator.bluetooth.requestDevice({
-      filters:[{name:'Master_Rescue_Node'}],
-      optionalServices:[SERVICE_UUID]
-    });
-
-    // 실제 연결이 끊기면 UI도 즉시 연결 해제로 바꾼다.
-    bleDevice.removeEventListener('gattserverdisconnected',onGattDisconnected);
-    bleDevice.addEventListener('gattserverdisconnected',onGattDisconnected);
-
-    await acquireCharacteristics();
-    gattQueue=Promise.resolve();
-
+    const device=await navigator.bluetooth.requestDevice({filters:[{name:'Master_Rescue_Node'}],optionalServices:[SERVICE_UUID]});
+    const server=await device.gatt.connect();
+    const service=await server.getPrimaryService(SERVICE_UUID);
+    cmdChar=await service.getCharacteristic(CHAR_CMD_UUID);
+    const dataChar=await service.getCharacteristic(CHAR_DATA_UUID);
+    await dataChar.startNotifications();
+    dataChar.addEventListener('characteristicvaluechanged',handleDataNotify);
+    document.getElementById('connectBtn').innerText='✅ 연결됨';
+    document.getElementById('connectBtn').disabled=true;
+    setEnabled(true);
     log('마스터 연결 성공');
-
-    await sendCmd('GETDIST');
-    await sleep(300);
     await sendCmd('GETBASE');
-    await sleep(300);
     await sendCmd('GETMODEL');
-
-  }catch(e){
-    setConnectedUI(false);
-    log('<span style="color:red">연결 실패: '+e+'</span>');
-  }
+  }catch(e){log('연결 실패: '+e);}
 };
-
-document.getElementById('saveDist').onclick=()=>{
-  const ab=parseFloat(document.getElementById('distAB').value);
-  const ac=parseFloat(document.getElementById('distAC').value);
-  const bc=parseFloat(document.getElementById('distBC').value);
-
-  if(!Number.isFinite(ab)||!Number.isFinite(ac)||!Number.isFinite(bc)||ab<=0||ac<=0||bc<=0){
-    log('<span style="color:red">AB / AC / BC 거리를 모두 올바르게 입력하세요.</span>');
-    return;
-  }
-
-  if(ab+ac<=bc || ab+bc<=ac || ac+bc<=ab){
-    log('<span style="color:red">입력한 세 거리로 삼각형을 만들 수 없습니다.</span>');
-    return;
-  }
-
-  sendCmd(`SETDIST:${ab.toFixed(2)},${ac.toFixed(2)},${bc.toFixed(2)}`);
-};
-
-document.getElementById('getDist').onclick=()=>sendCmd('GETDIST');
 
 document.getElementById('calA').onclick=()=>sendCmd('CAL:A');
 document.getElementById('calB').onclick=()=>sendCmd('CAL:B');
@@ -362,21 +153,7 @@ document.getElementById('saveModel').onclick=()=>{
 
 function handleDataNotify(event){
   const value=new TextDecoder().decode(event.target.value);
-
-  if(value.startsWith('DIST:')){
-    const p=value.substring(5).split(',');
-    const ab=parseFloat(p[0]), ac=parseFloat(p[1]), bc=parseFloat(p[2]);
-
-    if(ab>0 && ac>0 && bc>0){
-      document.getElementById('distAB').value=ab.toFixed(2);
-      document.getElementById('distAC').value=ac.toFixed(2);
-      document.getElementById('distBC').value=bc.toFixed(2);
-      document.getElementById('distStatus').innerText=`✅ 저장된 거리: AB=${ab.toFixed(2)}m / AC=${ac.toFixed(2)}m / BC=${bc.toFixed(2)}m`;
-      log(`노드 거리 확인: AB=${ab.toFixed(2)}, AC=${ac.toFixed(2)}, BC=${bc.toFixed(2)}`);
-    }else{
-      document.getElementById('distStatus').innerText='⚠️ 저장된 노드 거리가 없습니다.';
-    }
-  }else if(value.startsWith('STAT:')){
+  if(value.startsWith('STAT:')){
     const p=value.substring(5).split(',');
     updateBadge('nodeA','rssiA',p[0]==='1',p[3]);
     updateBadge('nodeB','rssiB',p[1]==='1',p[4]);
@@ -391,46 +168,22 @@ function handleDataNotify(event){
     const p=value.substring(6).split(',');
     document.getElementById('modelA').value=p[0]; document.getElementById('modelN').value=p[1];
     document.getElementById('modelStatus').innerText=`현재 저장값: A=${p[0]}, n=${p[1]}`;
+  }else if(value.startsWith('MODELOK:')){
+    const p=value.substring(8).split(',');
+    document.getElementById('modelStatus').innerText=`✅ 저장 완료: A=${p[0]}, n=${p[1]}`;
+    log(`A·n 저장 완료: A=${p[0]}, n=${p[1]}`);
   }else if(value.startsWith('RES:')){
     const p=value.substring(4).split(',');
     document.getElementById('valX').innerText=p[0]; document.getElementById('valY').innerText=p[1]; document.getElementById('valZ').innerText=p[2];
     document.getElementById('valD1').innerText=p[3]; document.getElementById('valD2').innerText=p[4]; document.getElementById('valD3').innerText=p[5];
     document.getElementById('zMode').innerText=(p[6]==='1'?'ON':'OFF');
     log(`위치 계산 완료 X=${p[0]}, Y=${p[1]}, Z=${p[2]}`);
-  }else if(value.startsWith('ZSTAT:')){
-    const p=value.substring(6).split(',');
-    const on=(p[0]==='ON');
-    const reason=p[1]||'';
-    document.getElementById('zMode').innerText=on?'ON':'OFF';
-
-    const reasonMap={
-      'OK':'정상 - 기압 높이 보정 적용 중',
-      'PRESS_STALE':'현재 Target 기압값이 오래되어 보정하지 않음',
-      'PRESS_INVALID':'현재 Target 기압값이 정상 범위가 아님',
-      'BASE_NOT_SET':'A/B/C 기준기압이 모두 등록되지 않음',
-      'DZ_INVALID_A':'A 높이차 계산값이 비정상',
-      'DZ_INVALID_B':'B 높이차 계산값이 비정상',
-      'DZ_INVALID_C':'C 높이차 계산값이 비정상',
-      'DZ_GE_DIST_A':'A 높이차가 RSSI 거리보다 크거나 같음',
-      'DZ_GE_DIST_B':'B 높이차가 RSSI 거리보다 크거나 같음',
-      'DZ_GE_DIST_C':'C 높이차가 RSSI 거리보다 크거나 같음'
-    };
-    const msg=reasonMap[reason]||('원인: '+reason);
-    const el=document.getElementById('zReason');
-    el.innerText='Z 보정 '+(on?'ON':'OFF')+' - '+msg;
-    el.style.color=on?'#15803d':'#b45309';
-  }else if(value.startsWith('DZ:')){
-    const p=value.substring(3).split(',');
-    document.getElementById('zDetail').innerText=`높이차 A=${p[0]}m / B=${p[1]}m / C=${p[2]}m`;
   }else if(value.startsWith('WARN:')){
     log('<span class="warn">'+value+'</span>');
   }else if(value.startsWith('ERR:')){
-    if(value==='ERR:DIST_NOT_SET') log('<span style="color:red">노드 거리 AB / AC / BC를 먼저 저장하세요.</span>');
-    else if(value==='ERR:DIST_TRIANGLE') log('<span style="color:red">세 거리로 삼각형을 만들 수 없습니다.</span>');
-    else log('<span style="color:red">'+value+'</span>');
+    log('<span style="color:red">'+value+'</span>');
   }
 }
-
 function setBase(id,v){const n=parseFloat(v);document.getElementById(id).innerText=(n>0?n.toFixed(2):'-');}
 function updateBadge(nodeId,rssiId,on,rssi){const el=document.getElementById(nodeId);const re=document.getElementById(rssiId);el.innerText=on?'🟢 정상':'🔴 신호 없음';el.className='badge '+(on?'bg-on':'bg-off');re.innerText='RSSI: '+(rssi!=='-999'?rssi+' dBm':'수집 중');}
 </script>
