@@ -27,6 +27,12 @@
 SPIClass loraSPI(FSPI);
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_NRST, LORA_BUSY, loraSPI);
 
+volatile bool loraPacketReceived = false;
+
+void IRAM_ATTR onLoraPacketReceived() {
+  loraPacketReceived = true;
+}
+
 // ---------- Anchor XY coordinates (meters) ----------
 // A(Master) is fixed at (0,0).
 // B is placed on +X axis at (AB, 0).
@@ -571,7 +577,10 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
     cmd.trim();
     cmd.toUpperCase();
 
+    Serial.printf("[BLE RX] %s\n", cmd.c_str());
+
     if (cmd == "MEASURE" || cmd == "1") {
+      Serial.println("[MEASURE] runSnapshot() start");
       runSnapshot();
       return;
     }
@@ -702,8 +711,16 @@ void initLoRa() {
 
   if (state == RADIOLIB_ERR_NONE) {
     radio.setDio2AsRfSwitch(true);
-    radio.startReceive();
-    Serial.println("[LORA] Master OK");
+
+    // DIO1에서 실제 RX_DONE이 발생했을 때만 FIFO를 읽는다.
+    radio.setPacketReceivedAction(onLoraPacketReceived);
+
+    int rxState = radio.startReceive();
+    if (rxState == RADIOLIB_ERR_NONE) {
+      Serial.println("[LORA] Master OK / RX interrupt armed");
+    } else {
+      Serial.printf("[LORA] startReceive FAIL code=%d\n", rxState);
+    }
   } else {
     Serial.printf("[LORA] Master FAIL code=%d\n", state);
   }
@@ -754,18 +771,31 @@ void setup() {
 }
 
 void loop() {
-  String msg;
-  int state = radio.readData(msg);
+  // 패킷 수신 완료 인터럽트가 발생했을 때만 FIFO를 읽는다.
+  if (loraPacketReceived) {
+    loraPacketReceived = false;
 
-  if (state == RADIOLIB_ERR_NONE) {
-    int directRssi = (int)radio.getRSSI();
+    String msg;
+    int state = radio.readData(msg);
 
-    Serial.printf("[LORA RX] %s | RSSI:%d dBm\n",
-                  msg.c_str(), directRssi);
+    if (state == RADIOLIB_ERR_NONE) {
+      int directRssi = (int)radio.getRSSI();
 
-    parseIncomingPacket(msg, directRssi);
+      Serial.printf("[LORA RX] %s | RSSI:%d dBm\n",
+                    msg.c_str(), directRssi);
 
-    radio.startReceive();
+      parseIncomingPacket(msg, directRssi);
+    } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
+      Serial.println("[LORA RX] CRC mismatch - packet discarded");
+    } else {
+      Serial.printf("[LORA RX] readData error=%d\n", state);
+    }
+
+    // 다음 패킷 수신 대기
+    int rxState = radio.startReceive();
+    if (rxState != RADIOLIB_ERR_NONE) {
+      Serial.printf("[LORA] restart RX FAIL code=%d\n", rxState);
+    }
   }
 
   sendStatus();
