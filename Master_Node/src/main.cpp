@@ -9,16 +9,20 @@
 #include <algorithm>
 #include <math.h>
 
-// ================= LoRa =================
+// =====================================================
+// LoRa
+// =====================================================
+
 #define LORA_NSS  41
 #define LORA_BUSY 40
 #define LORA_NRST 42
 #define LORA_DIO1 39
-#define LORA_SCK  7
-#define LORA_MISO 8
-#define LORA_MOSI 9
+#define LORA_SCK   7
+#define LORA_MISO  8
+#define LORA_MOSI  9
 
 SPIClass loraSPI(FSPI);
+
 SX1262 radio = new Module(
   LORA_NSS,
   LORA_DIO1,
@@ -28,6 +32,7 @@ SX1262 radio = new Module(
 );
 
 bool loraOK = false;
+
 volatile bool receivedFlag = false;
 
 void setFlag() {
@@ -36,9 +41,14 @@ void setFlag() {
 
 // =====================================================
 // 고정 Anchor 좌표
+//
 // AB = 15m
 // AC = 20m
 // BC = 15m
+//
+// A = (0,0)
+// B = (15,0)
+// C = (13.3333,14.9071)
 // =====================================================
 
 const float AX = 0.0f;
@@ -50,23 +60,58 @@ const float BY = 0.0f;
 const float CX = 13.3333f;
 const float CY = 14.9071f;
 
-// ================= BLE =================
+// =====================================================
+// BLE
+// =====================================================
 
-#define SERVICE_UUID   "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHAR_CMD_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define CHAR_DATA_UUID "a3c17822-1d5b-4176-a447-0624916a0487"
+#define SERVICE_UUID \
+"4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+
+#define CHAR_CMD_UUID \
+"beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+#define CHAR_DATA_UUID \
+"a3c17822-1d5b-4176-a447-0624916a0487"
 
 BLECharacteristic* dataChar = nullptr;
-bool bleConnected = false;
+
+volatile bool bleConnected = false;
+
+// BLE 끊김 후 loop에서 광고 재시작
+volatile bool restartAdvertising = false;
+unsigned long disconnectTime = 0;
+
+// =====================================================
+// BLE 명령 큐
+//
+// 중요:
+// BLE CALLBACK에서는 계산하지 않는다.
+// 명령만 여기 저장하고 loop()에서 실행한다.
+// =====================================================
+
+volatile bool commandPending = false;
+
+char pendingCommand[64] = {0};
+
+portMUX_TYPE commandMux =
+  portMUX_INITIALIZER_UNLOCKED;
+
+// =====================================================
+// Preferences
+// =====================================================
 
 Preferences prefs;
 
-// ================= RSSI 모델 =================
+// =====================================================
+// RSSI 모델
+// =====================================================
 
 float modelA = -40.0f;
 float modelN = 2.8f;
 
-// ================= 기준 기압 =================
+// =====================================================
+// 기준기압
+// =====================================================
 
 float baseA = NAN;
 float baseB = NAN;
@@ -87,15 +132,24 @@ struct RssiBuf {
 
   void add(int r) {
 
-    if (r > -10 || r < -140) return;
+    if (
+      r > -10 ||
+      r < -140
+    ) {
+      return;
+    }
 
     v[idx++] = r;
 
-    if (idx >= 5) {
+    if (
+      idx >= 5
+    ) {
       idx = 0;
     }
 
-    if (count < 5) {
+    if (
+      count < 5
+    ) {
       count++;
     }
 
@@ -103,17 +157,22 @@ struct RssiBuf {
   }
 
   bool ready() {
+
     return count >= 5;
   }
 
   bool alive() {
-    return count > 0 &&
-           millis() - last < 7000;
+
+    return
+      count > 0 &&
+      millis() - last < 7000;
   }
 
   int median() {
 
-    if (count < 5) {
+    if (
+      count < 5
+    ) {
       return -999;
     }
 
@@ -135,13 +194,20 @@ struct RssiBuf {
 
   float spread() {
 
-    if (count < 2) {
+    if (
+      count < 2
+    ) {
       return 10.0f;
     }
 
     float mean = 0.0f;
 
-    for (int i = 0; i < count; i++) {
+    for (
+      int i = 0;
+      i < count;
+      i++
+    ) {
+
       mean += v[i];
     }
 
@@ -149,16 +215,22 @@ struct RssiBuf {
 
     float sum = 0.0f;
 
-    for (int i = 0; i < count; i++) {
+    for (
+      int i = 0;
+      i < count;
+      i++
+    ) {
 
       float d =
         v[i] - mean;
 
-      sum += d * d;
+      sum +=
+        d * d;
     }
 
     return sqrtf(
-      sum / (count - 1)
+      sum /
+      (count - 1)
     );
   }
 };
@@ -169,7 +241,8 @@ RssiBuf rC;
 
 // =====================================================
 // PRESS BUFFER
-// 30개 기압값 중앙값 사용
+//
+// 30개 중앙값
 // =====================================================
 
 struct PressBuf {
@@ -183,20 +256,30 @@ struct PressBuf {
 
   void add(float p) {
 
-    if (!isfinite(p)) return;
+    if (
+      !isfinite(p)
+    ) {
+      return;
+    }
 
-    if (p < 300.0f ||
-        p > 1100.0f) {
+    if (
+      p < 300.0f ||
+      p > 1100.0f
+    ) {
       return;
     }
 
     v[idx++] = p;
 
-    if (idx >= 30) {
+    if (
+      idx >= 30
+    ) {
       idx = 0;
     }
 
-    if (count < 30) {
+    if (
+      count < 30
+    ) {
       count++;
     }
 
@@ -205,19 +288,27 @@ struct PressBuf {
 
   bool fresh() {
 
-    return count > 0 &&
-           millis() - last < 7000;
+    return
+      count > 0 &&
+      millis() - last < 7000;
   }
 
   float median() {
 
-    if (count == 0) {
+    if (
+      count == 0
+    ) {
       return NAN;
     }
 
     float t[30];
 
-    for (int i = 0; i < count; i++) {
+    for (
+      int i = 0;
+      i < count;
+      i++
+    ) {
+
       t[i] = v[i];
     }
 
@@ -226,17 +317,19 @@ struct PressBuf {
       t + count
     );
 
-    if (count % 2) {
+    if (
+      count % 2
+    ) {
 
-      return t[count / 2];
-
-    } else {
-
-      return (
-        t[count / 2 - 1] +
-        t[count / 2]
-      ) / 2.0f;
+      return t[
+        count / 2
+      ];
     }
+
+    return (
+      t[count / 2 - 1] +
+      t[count / 2]
+    ) / 2.0f;
   }
 };
 
@@ -248,12 +341,22 @@ PressBuf press;
 
 bool validPress(float p) {
 
-  return isfinite(p) &&
-         p >= 300.0f &&
-         p <= 1100.0f;
+  return
+    isfinite(p) &&
+    p >= 300.0f &&
+    p <= 1100.0f;
 }
 
-void bleSend(const String& s) {
+// =====================================================
+// BLE SEND
+//
+// 이제 CALLBACK 안에서는 호출하지 않는다.
+// loop()에서만 호출됨.
+// =====================================================
+
+void bleSend(
+  const String& s
+) {
 
   Serial.println(
     "[BLE TX] " + s
@@ -263,6 +366,7 @@ void bleSend(const String& s) {
     !bleConnected ||
     dataChar == nullptr
   ) {
+
     return;
   }
 
@@ -275,25 +379,38 @@ void bleSend(const String& s) {
   delay(20);
 }
 
+// =====================================================
+// PRESS Parsing
+// =====================================================
+
 bool getPressure(
   const String& msg,
   float& p
 ) {
 
   int i =
-    msg.indexOf("PRESS:");
+    msg.indexOf(
+      "PRESS:"
+    );
 
-  if (i < 0) {
+  if (
+    i < 0
+  ) {
+
     return false;
   }
 
   String s =
-    msg.substring(i + 6);
+    msg.substring(
+      i + 6
+    );
 
   int comma =
     s.indexOf(',');
 
-  if (comma >= 0) {
+  if (
+    comma >= 0
+  ) {
 
     s =
       s.substring(
@@ -302,10 +419,15 @@ bool getPressure(
       );
   }
 
-  p = s.toFloat();
+  p =
+    s.toFloat();
 
   return validPress(p);
 }
+
+// =====================================================
+// Relay RSSI Parsing
+// =====================================================
 
 bool getRelayRSSI(
   const String& msg,
@@ -313,19 +435,28 @@ bool getRelayRSSI(
 ) {
 
   int i =
-    msg.indexOf("RSSI:");
+    msg.indexOf(
+      "RSSI:"
+    );
 
-  if (i < 0) {
+  if (
+    i < 0
+  ) {
+
     return false;
   }
 
   String s =
-    msg.substring(i + 5);
+    msg.substring(
+      i + 5
+    );
 
   int comma =
     s.indexOf(',');
 
-  if (comma >= 0) {
+  if (
+    comma >= 0
+  ) {
 
     s =
       s.substring(
@@ -334,17 +465,21 @@ bool getRelayRSSI(
       );
   }
 
-  r = s.toInt();
+  r =
+    s.toInt();
 
-  return r <= -10 &&
-         r >= -140;
+  return
+    r <= -10 &&
+    r >= -140;
 }
 
 // =====================================================
 // RSSI → 거리
 // =====================================================
 
-float rssiDistance(int rssi) {
+float rssiDistance(
+  int rssi
+) {
 
   return powf(
     10.0f,
@@ -359,7 +494,13 @@ float rssiDistance(int rssi) {
   );
 }
 
-float getWeight(RssiBuf& b) {
+// =====================================================
+// RSSI 가중치
+// =====================================================
+
+float getWeight(
+  RssiBuf& b
+) {
 
   float sigma =
     b.spread();
@@ -367,15 +508,22 @@ float getWeight(RssiBuf& b) {
   float w =
     1.0f /
     (
-      sigma * sigma +
+      sigma *
+      sigma +
       4.0f
     );
 
-  if (w < 0.01f) {
+  if (
+    w < 0.01f
+  ) {
+
     w = 0.01f;
   }
 
-  if (w > 0.25f) {
+  if (
+    w > 0.25f
+  ) {
+
     w = 0.25f;
   }
 
@@ -383,7 +531,7 @@ float getWeight(RssiBuf& b) {
 }
 
 // =====================================================
-// 기압 → 상대 높이
+// 기압 → 상대높이
 // =====================================================
 
 float pressureHeight(
@@ -396,7 +544,8 @@ float pressureHeight(
     (
       1.0f -
       powf(
-        current / reference,
+        current /
+        reference,
         0.19029495f
       )
     );
@@ -411,7 +560,11 @@ void processPacket(
   int directRSSI
 ) {
 
-  // TARGET 직접 수신 = A RSSI
+  // ---------------------------------------------------
+  // Target 직접 수신
+  // Master = Anchor A
+  // ---------------------------------------------------
+
   if (
     msg.startsWith(
       "TARGET:PING"
@@ -444,7 +597,10 @@ void processPacket(
     return;
   }
 
-  // Anchor2가 측정한 Target RSSI
+  // ---------------------------------------------------
+  // Anchor2
+  // ---------------------------------------------------
+
   if (
     msg.startsWith(
       "ANCHOR2:"
@@ -460,7 +616,9 @@ void processPacket(
       )
     ) {
 
-      rB.add(rssi);
+      rB.add(
+        rssi
+      );
 
       Serial.printf(
         "[A2] RSSI=%d\n",
@@ -471,7 +629,10 @@ void processPacket(
     return;
   }
 
-  // Anchor3가 측정한 Target RSSI
+  // ---------------------------------------------------
+  // Anchor3
+  // ---------------------------------------------------
+
   if (
     msg.startsWith(
       "ANCHOR3:"
@@ -487,7 +648,9 @@ void processPacket(
       )
     ) {
 
-      rC.add(rssi);
+      rC.add(
+        rssi
+      );
 
       Serial.printf(
         "[A3] RSSI=%d\n",
@@ -502,7 +665,9 @@ void processPacket(
     "[UNKNOWN] "
   );
 
-  Serial.println(msg);
+  Serial.println(
+    msg
+  );
 }
 
 // =====================================================
@@ -528,7 +693,7 @@ bool solveWLS(
     CY
   };
 
-  // 고정 앵커 삼각형 중심 부근에서 시작
+  // 삼각형 중심 부근
   x = 9.4444f;
   y = 4.9690f;
 
@@ -552,10 +717,12 @@ bool solveWLS(
     ) {
 
       float dx =
-        x - px[i];
+        x -
+        px[i];
 
       float dy =
-        y - py[i];
+        y -
+        py[i];
 
       float predicted =
         sqrtf(
@@ -611,8 +778,10 @@ bool solveWLS(
     }
 
     float det =
-      h00 * h11 -
-      h01 * h01;
+      h00 *
+      h11 -
+      h01 *
+      h01;
 
     if (
       fabsf(det) <
@@ -624,15 +793,19 @@ bool solveWLS(
 
     float sx =
       -(
-        h11 * g0 -
-        h01 * g1
+        h11 *
+        g0 -
+        h01 *
+        g1
       ) /
       det;
 
     float sy =
       -(
-        -h01 * g0 +
-        h00 * g1
+        -h01 *
+        g0 +
+        h00 *
+        g1
       ) /
       det;
 
@@ -693,7 +866,10 @@ void measure() {
     "===== MEASURE ====="
   );
 
+  // ---------------------------------------------------
   // RSSI 5개씩 필요
+  // ---------------------------------------------------
+
   if (
     !rA.ready() ||
     !rB.ready() ||
@@ -709,19 +885,30 @@ void measure() {
       String(rC.count) +
       "/5";
 
-    bleSend(err);
+    Serial.println(
+      err
+    );
 
-    Serial.println(err);
+    bleSend(
+      err
+    );
 
     return;
   }
 
-  // 오래된 RSSI 거부
+  // ---------------------------------------------------
+  // 최근 신호 확인
+  // ---------------------------------------------------
+
   if (
     !rA.alive() ||
     !rB.alive() ||
     !rC.alive()
   ) {
+
+    Serial.println(
+      "ERR:STALE"
+    );
 
     bleSend(
       "ERR:STALE"
@@ -730,7 +917,10 @@ void measure() {
     return;
   }
 
-  // RSSI 중앙값
+  // ---------------------------------------------------
+  // 중앙값 RSSI
+  // ---------------------------------------------------
+
   int ma =
     rA.median();
 
@@ -740,38 +930,60 @@ void measure() {
   int mc =
     rC.median();
 
-  // RSSI 기반 3D 거리
+  Serial.printf(
+    "RSSI A=%d B=%d C=%d\n",
+    ma,
+    mb,
+    mc
+  );
+
+  // ---------------------------------------------------
+  // RSSI → 3D 거리
+  // ---------------------------------------------------
+
   float d3d[3] = {
 
-    rssiDistance(ma),
+    rssiDistance(
+      ma
+    ),
 
-    rssiDistance(mb),
+    rssiDistance(
+      mb
+    ),
 
-    rssiDistance(mc)
+    rssiDistance(
+      mc
+    )
   };
 
-  // 기본적으로 RSSI 거리 그대로 사용
   float dxy[3] = {
 
     d3d[0],
-
     d3d[1],
-
     d3d[2]
   };
 
+  // ---------------------------------------------------
   // WLS 가중치
+  // ---------------------------------------------------
+
   float w[3] = {
 
-    getWeight(rA),
+    getWeight(
+      rA
+    ),
 
-    getWeight(rB),
+    getWeight(
+      rB
+    ),
 
-    getWeight(rC)
+    getWeight(
+      rC
+    )
   };
 
   // ===================================================
-  // 기압 Z 보정
+  // Z
   // ===================================================
 
   float z = 0.0f;
@@ -786,17 +998,24 @@ void measure() {
     press.median();
 
   bool basesReady =
-    validPress(baseA) &&
-    validPress(baseB) &&
-    validPress(baseC);
+    validPress(
+      baseA
+    ) &&
+    validPress(
+      baseB
+    ) &&
+    validPress(
+      baseC
+    );
 
   if (
     press.fresh() &&
-    validPress(currentP) &&
+    validPress(
+      currentP
+    ) &&
     basesReady
   ) {
 
-    // Target과 각 Anchor의 높이 차이
     dzA =
       pressureHeight(
         currentP,
@@ -816,14 +1035,14 @@ void measure() {
       );
 
     // -----------------------------------------------
-    // 작은 Z 흔들림 제거
-    // ±1.5m 이하는 0m
+    // ±1.5m 이내는 기압 흔들림으로 처리
     // -----------------------------------------------
 
     if (
       fabsf(dzA) <
       1.5f
     ) {
+
       dzA = 0.0f;
     }
 
@@ -831,6 +1050,7 @@ void measure() {
       fabsf(dzB) <
       1.5f
     ) {
+
       dzB = 0.0f;
     }
 
@@ -838,65 +1058,73 @@ void measure() {
       fabsf(dzC) <
       1.5f
     ) {
+
       dzC = 0.0f;
     }
 
     // -----------------------------------------------
-    // 3D RSSI 거리보다 높이차가 작을 때만
-    // 수평거리 보정 적용
+    // Z가 RSSI 3D 거리보다 작아야 물리적으로 가능
     // -----------------------------------------------
 
     bool zValid =
-      fabsf(dzA) < d3d[0] &&
-      fabsf(dzB) < d3d[1] &&
-      fabsf(dzC) < d3d[2];
+      fabsf(dzA) <
+      d3d[0] &&
+      fabsf(dzB) <
+      d3d[1] &&
+      fabsf(dzC) <
+      d3d[2];
 
-    if (zValid) {
+    if (
+      zValid
+    ) {
 
       dxy[0] =
         sqrtf(
-          d3d[0] * d3d[0] -
-          dzA * dzA
+          d3d[0] *
+          d3d[0] -
+          dzA *
+          dzA
         );
 
       dxy[1] =
         sqrtf(
-          d3d[1] * d3d[1] -
-          dzB * dzB
+          d3d[1] *
+          d3d[1] -
+          dzB *
+          dzB
         );
 
       dxy[2] =
         sqrtf(
-          d3d[2] * d3d[2] -
-          dzC * dzC
+          d3d[2] *
+          d3d[2] -
+          dzC *
+          dzC
         );
 
-      // 화면에 표시할 Z는
-      // Master(A)를 0m 기준으로 한 Target 상대높이
-      z = dzA;
+      z =
+        dzA;
 
       zMode = 1;
 
     } else {
 
-      // 기압값과 RSSI 거리가 물리적으로 맞지 않으면
-      // 위치 계산은 RSSI 거리만 사용
       z = 0.0f;
 
       zMode = 0;
 
       Serial.println(
-        "[Z] CORRECTION OFF - DZ >= RSSI DIST"
+        "[Z] CORRECTION OFF"
       );
     }
   }
 
   // ===================================================
-  // WLS 삼변측량
+  // WLS
   // ===================================================
 
-  float x;
-  float y;
+  float x = 0.0f;
+  float y = 0.0f;
 
   if (
     !solveWLS(
@@ -909,29 +1137,35 @@ void measure() {
 
     String err =
       "ERR:WLS,D:" +
-      String(dxy[0], 2) +
+      String(
+        dxy[0],
+        2
+      ) +
       "," +
-      String(dxy[1], 2) +
+      String(
+        dxy[1],
+        2
+      ) +
       "," +
-      String(dxy[2], 2);
+      String(
+        dxy[2],
+        2
+      );
 
-    Serial.println(err);
+    Serial.println(
+      err
+    );
 
-    bleSend(err);
+    bleSend(
+      err
+    );
 
     return;
   }
 
   // ===================================================
-  // SERIAL DEBUG
+  // SERIAL
   // ===================================================
-
-  Serial.printf(
-    "RSSI A=%d B=%d C=%d\n",
-    ma,
-    mb,
-    mc
-  );
 
   Serial.printf(
     "3D DIST A=%.2f B=%.2f C=%.2f\n",
@@ -980,34 +1214,68 @@ void measure() {
 
   String result =
     "RES:" +
-    String(x, 2) +
+    String(
+      x,
+      2
+    ) +
     "," +
-    String(y, 2) +
+    String(
+      y,
+      2
+    ) +
     "," +
-    String(z, 2) +
+    String(
+      z,
+      2
+    ) +
     "," +
-    String(dxy[0], 2) +
+    String(
+      dxy[0],
+      2
+    ) +
     "," +
-    String(dxy[1], 2) +
+    String(
+      dxy[1],
+      2
+    ) +
     "," +
-    String(dxy[2], 2) +
+    String(
+      dxy[2],
+      2
+    ) +
     "," +
-    String(zMode);
+    String(
+      zMode
+    );
 
-  bleSend(result);
+  bleSend(
+    result
+  );
 
-  // Z 상세정보도 HTML로 전송
-  if (zMode) {
+  if (
+    zMode
+  ) {
 
     String dzMsg =
       "DZ:" +
-      String(dzA, 2) +
+      String(
+        dzA,
+        2
+      ) +
       "," +
-      String(dzB, 2) +
+      String(
+        dzB,
+        2
+      ) +
       "," +
-      String(dzC, 2);
+      String(
+        dzC,
+        2
+      );
 
-    bleSend(dzMsg);
+    bleSend(
+      dzMsg
+    );
   }
 
   Serial.println(
@@ -1016,7 +1284,7 @@ void measure() {
 }
 
 // =====================================================
-// 설정 불러오기
+// 설정
 // =====================================================
 
 void loadSettings() {
@@ -1071,7 +1339,7 @@ void loadSettings() {
 }
 
 // =====================================================
-// 기준기압
+// BASE
 // =====================================================
 
 void sendBase() {
@@ -1099,12 +1367,15 @@ void sendBase() {
       2
     );
 
-  bleSend(s);
+  bleSend(
+    s
+  );
 }
 
-void saveBase(char node) {
+void saveBase(
+  char node
+) {
 
-  // 최소 20개 기압 샘플 필요
   if (
     !press.fresh() ||
     press.count < 20
@@ -1112,12 +1383,18 @@ void saveBase(char node) {
 
     String err =
       "ERR:PRESS_SAMPLE," +
-      String(press.count) +
+      String(
+        press.count
+      ) +
       "/20";
 
-    bleSend(err);
+    Serial.println(
+      err
+    );
 
-    Serial.println(err);
+    bleSend(
+      err
+    );
 
     return;
   }
@@ -1172,27 +1449,35 @@ void saveBase(char node) {
     );
   }
 
-  bleSend(
+  String result =
     "CALOK:" +
-    String(node) +
+    String(
+      node
+    ) +
     "," +
-    String(p, 2)
-  );
+    String(
+      p,
+      2
+    );
 
   Serial.printf(
     "[CAL] %c = %.2f hPa\n",
     node,
     p
   );
+
+  bleSend(
+    result
+  );
 }
 
 // =====================================================
-// RSSI 모델
+// MODEL
 // =====================================================
 
 void sendModel() {
 
-  bleSend(
+  String result =
     "MODEL:" +
     String(
       modelA,
@@ -1202,11 +1487,16 @@ void sendModel() {
     String(
       modelN,
       3
-    )
+    );
+
+  bleSend(
+    result
   );
 }
 
-void setModel(String s) {
+void setModel(
+  String s
+) {
 
   int comma =
     s.indexOf(',');
@@ -1260,16 +1550,25 @@ void setModel(String s) {
     n
   );
 
-  bleSend(
+  String result =
     "MODELOK:" +
-    String(a, 2) +
+    String(
+      a,
+      2
+    ) +
     "," +
-    String(n, 3)
+    String(
+      n,
+      3
+    );
+
+  bleSend(
+    result
   );
 }
 
 // =====================================================
-// BLE CALLBACK
+// BLE SERVER CALLBACK
 // =====================================================
 
 class ServerCB :
@@ -1280,6 +1579,9 @@ class ServerCB :
   ) override {
 
     bleConnected = true;
+
+    restartAdvertising =
+      false;
 
     Serial.println(
       "[BLE] CONNECTED"
@@ -1292,13 +1594,30 @@ class ServerCB :
 
     bleConnected = false;
 
+    restartAdvertising =
+      true;
+
+    disconnectTime =
+      millis();
+
     Serial.println(
       "[BLE] DISCONNECTED"
     );
-
-    BLEDevice::startAdvertising();
   }
 };
+
+// =====================================================
+// BLE COMMAND CALLBACK
+//
+// 여기서는 절대로:
+// - measure()
+// - bleSend()
+// - Preferences 저장
+// - WLS
+// 등을 실행하지 않는다.
+//
+// 명령만 복사하고 바로 종료.
+// =====================================================
 
 class CommandCB :
   public BLECharacteristicCallbacks {
@@ -1307,84 +1626,169 @@ class CommandCB :
     BLECharacteristic* c
   ) override {
 
-    String cmd =
-      c->getValue().c_str();
-
-    cmd.trim();
-
-    Serial.println(
-      "[BLE RX] " +
-      cmd
-    );
+    std::string value =
+      c->getValue();
 
     if (
-      cmd == "MEASURE"
+      value.length() == 0
     ) {
 
-      measure();
-
+      return;
     }
 
-    else if (
-      cmd == "GETBASE"
+    portENTER_CRITICAL(
+      &commandMux
+    );
+
+    size_t len =
+      value.length();
+
+    if (
+      len >
+      sizeof(pendingCommand) - 1
     ) {
 
-      sendBase();
-
+      len =
+        sizeof(pendingCommand) - 1;
     }
 
-    else if (
-      cmd == "CAL:A"
-    ) {
+    memcpy(
+      pendingCommand,
+      value.data(),
+      len
+    );
 
-      saveBase('A');
+    pendingCommand[len] =
+      '\0';
 
-    }
+    commandPending =
+      true;
 
-    else if (
-      cmd == "CAL:B"
-    ) {
-
-      saveBase('B');
-
-    }
-
-    else if (
-      cmd == "CAL:C"
-    ) {
-
-      saveBase('C');
-
-    }
-
-    else if (
-      cmd == "GETMODEL"
-    ) {
-
-      sendModel();
-
-    }
-
-    else if (
-      cmd.startsWith(
-        "SETMODEL:"
-      )
-    ) {
-
-      setModel(
-        cmd.substring(9)
-      );
-
-    }
-
-    else {
-
-      bleSend(
-        "ERR:CMD"
-      );
-    }
+    portEXIT_CRITICAL(
+      &commandMux
+    );
   }
 };
+
+// =====================================================
+// loop에서 BLE 명령 처리
+// =====================================================
+
+void processPendingCommand() {
+
+  if (
+    !commandPending
+  ) {
+
+    return;
+  }
+
+  char localCommand[64];
+
+  portENTER_CRITICAL(
+    &commandMux
+  );
+
+  strncpy(
+    localCommand,
+    pendingCommand,
+    sizeof(localCommand)
+  );
+
+  localCommand[
+    sizeof(localCommand) - 1
+  ] = '\0';
+
+  commandPending =
+    false;
+
+  portEXIT_CRITICAL(
+    &commandMux
+  );
+
+  String cmd =
+    String(
+      localCommand
+    );
+
+  cmd.trim();
+
+  Serial.println(
+    "[BLE RX] " + cmd
+  );
+
+  if (
+    cmd ==
+    "MEASURE"
+  ) {
+
+    measure();
+  }
+
+  else if (
+    cmd ==
+    "GETBASE"
+  ) {
+
+    sendBase();
+  }
+
+  else if (
+    cmd ==
+    "CAL:A"
+  ) {
+
+    saveBase(
+      'A'
+    );
+  }
+
+  else if (
+    cmd ==
+    "CAL:B"
+  ) {
+
+    saveBase(
+      'B'
+    );
+  }
+
+  else if (
+    cmd ==
+    "CAL:C"
+  ) {
+
+    saveBase(
+      'C'
+    );
+  }
+
+  else if (
+    cmd ==
+    "GETMODEL"
+  ) {
+
+    sendModel();
+  }
+
+  else if (
+    cmd.startsWith(
+      "SETMODEL:"
+    )
+  ) {
+
+    setModel(
+      cmd.substring(9)
+    );
+  }
+
+  else {
+
+    bleSend(
+      "ERR:CMD"
+    );
+  }
+}
 
 // =====================================================
 // BLE STATUS
@@ -1397,13 +1801,16 @@ void sendStatus() {
   if (
     !bleConnected
   ) {
+
     return;
   }
 
+  // BLE 부하 완화
+  // 1초 → 2초
   if (
     millis() -
     lastStat <
-    1000
+    2000
   ) {
 
     return;
@@ -1418,15 +1825,21 @@ void sendStatus() {
   String s =
     "STAT:" +
     String(
-      rA.alive() ? 1 : 0
+      rA.alive()
+        ? 1
+        : 0
     ) +
     "," +
     String(
-      rB.alive() ? 1 : 0
+      rB.alive()
+        ? 1
+        : 0
     ) +
     "," +
     String(
-      rC.alive() ? 1 : 0
+      rC.alive()
+        ? 1
+        : 0
     ) +
     "," +
     String(
@@ -1448,7 +1861,9 @@ void sendStatus() {
       2
     );
 
-  bleSend(s);
+  bleSend(
+    s
+  );
 }
 
 // =====================================================
@@ -1467,14 +1882,18 @@ void initLoRa() {
     LOW
   );
 
-  delay(20);
+  delay(
+    20
+  );
 
   digitalWrite(
     LORA_NRST,
     HIGH
   );
 
-  delay(100);
+  delay(
+    100
+  );
 
   loraSPI.begin(
     LORA_SCK,
@@ -1511,7 +1930,8 @@ void initLoRa() {
 
     radio.startReceive();
 
-    loraOK = true;
+    loraOK =
+      true;
 
     Serial.println(
       "[LORA] MASTER OK"
@@ -1553,10 +1973,12 @@ void initBLE() {
     );
 
   BLECharacteristic* cmd =
-  service->createCharacteristic(
-    CHAR_CMD_UUID,
-    BLECharacteristic::PROPERTY_WRITE
-  );
+    service->createCharacteristic(
+      CHAR_CMD_UUID,
+
+      // HTML의 writeValue()와 맞춤
+      BLECharacteristic::PROPERTY_WRITE
+    );
 
   cmd->setCallbacks(
     new CommandCB()
@@ -1600,12 +2022,14 @@ void setup() {
     115200
   );
 
-  delay(1500);
+  delay(
+    1500
+  );
 
   Serial.println();
 
   Serial.println(
-    "=== SANJIGI MASTER / FIXED 15-20-15 / PRESS30 ==="
+    "=== SANJIGI MASTER / FIXED 15-20-15 / PRESS30 / BLE SAFE ==="
   );
 
   loadSettings();
@@ -1624,6 +2048,10 @@ void setup() {
 // =====================================================
 
 void loop() {
+
+  // ---------------------------------------------------
+  // LoRa
+  // ---------------------------------------------------
 
   if (
     loraOK &&
@@ -1678,5 +2106,40 @@ void loop() {
     radio.startReceive();
   }
 
+  // ---------------------------------------------------
+  // BLE 명령 처리
+  // BTC_TASK 밖에서 실행
+  // ---------------------------------------------------
+
+  processPendingCommand();
+
+  // ---------------------------------------------------
+  // BLE 광고 재시작
+  // CALLBACK 밖에서 실행
+  // ---------------------------------------------------
+
+  if (
+    restartAdvertising &&
+    millis() -
+    disconnectTime >
+    500
+  ) {
+
+    restartAdvertising =
+      false;
+
+    BLEDevice::startAdvertising();
+
+    Serial.println(
+      "[BLE] ADVERTISING RESTARTED"
+    );
+  }
+
+  // ---------------------------------------------------
+  // 상태 전송
+  // ---------------------------------------------------
+
   sendStatus();
+
+  delay(1);
 }
