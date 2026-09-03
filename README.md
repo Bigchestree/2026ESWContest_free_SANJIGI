@@ -25,7 +25,7 @@
 ---
 
 ## 3. 시스템 아키텍처 (System Architecture)
-
+<img width="6564" height="2260" alt="Image" src="https://github.com/user-attachments/assets/9b7b39a8-5609-4d04-ab3e-6ad79ebdc6e6" />
 
 ---
 
